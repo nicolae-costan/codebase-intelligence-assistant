@@ -1,0 +1,18 @@
+[project]
+name = "codebase-intelligence-assistant"
+version = "0.1.0"
+description = "Local-first codebase question answering pipeline."
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter>=0.20.1,<0.21",
+    "tree-sitter-languages>=1.10.2,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

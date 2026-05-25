@@ -115,6 +115,37 @@ Each chunk includes:
 - `source`
 - `language`
 
+## Evaluation Harness
+
+T3 adds a manual question-answer evaluation set and a small harness that can score any pipeline function shaped like `pipeline_fn(question) -> answer_or_result`. The committed test set lives in `eval/test_set.json` and includes answerable questions, expected source contexts, and out-of-scope refusal cases.
+
+Validate the test set:
+
+```bash
+python3 -m eval.run_eval
+```
+
+Smoke-test the harness with oracle answers:
+
+```bash
+python3 -m eval.run_eval --oracle
+```
+
+Use the harness from code:
+
+```python
+from eval.run_eval import run_eval
+
+metrics = run_eval(pipeline_fn)
+```
+
+Optional RAGAS scoring requires the eval extra and a local Ollama-compatible judge model:
+
+```bash
+python3 -m pip install -e ".[eval]"
+RAGAS_OLLAMA_MODEL=qwen2.5-coder:7b python3 -m eval.run_eval --oracle --ragas
+```
+
 ## Notes
 
 - `data/`, `index/`, and `results/` are intentionally ignored by git.

@@ -60,6 +60,34 @@ Run tests:
 python -m pytest
 ```
 
+## Repository Ingestion
+
+T2 implements a lightweight ingestion pipeline for cloning or crawling a repository before chunking. It collects `.py`, `.js`, `.ts`, `.java`, and README files, skips common dependency/build/cache directories, filters binary, license, generated, and oversized files, and can persist the flat raw file list for downstream stages.
+
+Run it on a local repository:
+
+```bash
+python3 -m src.ingest --repo tests/fixtures/sample_python_project
+```
+
+Clone and ingest a Git repository into `data/raw/<repo-name>`:
+
+```bash
+python3 -m src.ingest --url https://github.com/example/project.git
+```
+
+Persist a machine-readable raw file list:
+
+```bash
+python3 -m src.ingest --repo tests/fixtures/sample_python_project --output data/raw/files.json
+```
+
+Emit raw file records to stdout:
+
+```bash
+python3 -m src.ingest --repo tests/fixtures/sample_python_project --json
+```
+
 ## Semantic Chunker
 
 T1 implements a Python-first semantic chunker. It extracts functions, async functions, classes, and methods from `.py` files, preserving source text, docstrings, file paths, and line ranges for downstream retrieval and citation.

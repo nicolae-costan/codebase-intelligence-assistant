@@ -41,6 +41,7 @@ DEFINITION_TYPES = {
 }
 CLASS_TYPES = {"class_definition"}
 FUNCTION_TYPES = {"function_definition", "async_function_definition"}
+DEFAULT_CHUNK_OVERLAP_LINES = 20
 
 
 @dataclass(frozen=True)
@@ -52,11 +53,27 @@ class _SymbolRange:
     end_line: int
 
 
-def chunk_repository(repo: str | Path) -> list[Chunk]:
+@dataclass(frozen=True)
+class _LineWindow:
+    """Line offsets for one child chunk inside a larger symbol."""
+
+    start: int
+    end: int
+
+
+def chunk_repository(
+    repo: str | Path,
+    *,
+    max_chunk_lines: int | None = None,
+    chunk_overlap_lines: int = DEFAULT_CHUNK_OVERLAP_LINES,
+) -> list[Chunk]:
     """Extract semantic Python chunks from all supported files under `repo`.
 
     Args:
         repo: Repository or directory path to scan recursively.
+        max_chunk_lines: Optional maximum line span before a symbol is split
+            into linked overlapping subchunks.
+        chunk_overlap_lines: Number of overlapping lines between split chunks.
 
     Returns:
         Chunks sorted by file path and source location.
@@ -65,7 +82,14 @@ def chunk_repository(repo: str | Path) -> list[Chunk]:
     repo_path = Path(repo).resolve()
     chunks: list[Chunk] = []
     for path in iter_python_files(repo_path):
-        chunks.extend(chunk_file(path, repo_root=repo_path))
+        chunks.extend(
+            chunk_file(
+                path,
+                repo_root=repo_path,
+                max_chunk_lines=max_chunk_lines,
+                chunk_overlap_lines=chunk_overlap_lines,
+            )
+        )
     return sorted(chunks, key=lambda chunk: (chunk.filepath, chunk.start_line, chunk.end_line, chunk.function_name))
 
 
@@ -80,12 +104,21 @@ def iter_python_files(root: str | Path) -> Iterable[Path]:
             yield path
 
 
-def chunk_file(path: str | Path, repo_root: str | Path | None = None) -> list[Chunk]:
+def chunk_file(
+    path: str | Path,
+    repo_root: str | Path | None = None,
+    *,
+    max_chunk_lines: int | None = None,
+    chunk_overlap_lines: int = DEFAULT_CHUNK_OVERLAP_LINES,
+) -> list[Chunk]:
     """Extract semantic chunks from one Python file.
 
     Args:
         path: Python file to parse.
         repo_root: Optional root used to compute repository-relative paths.
+        max_chunk_lines: Optional maximum line span before a symbol is split
+            into linked overlapping subchunks.
+        chunk_overlap_lines: Number of overlapping lines between split chunks.
 
     Returns:
         Function, async function, class, and method chunks from the file.
@@ -101,19 +134,77 @@ def chunk_file(path: str | Path, repo_root: str | Path | None = None) -> list[Ch
     for symbol in _extract_symbol_ranges(source):
         source_text = "\n".join(lines[symbol.start_line - 1 : symbol.end_line])
         docstring = docstrings.by_qual_and_line.get((symbol.name, symbol.start_line), docstrings.by_qual.get(symbol.name, ""))
-        chunks.append(
-            Chunk(
-                id=make_chunk_id(relative_path, symbol.name, symbol.start_line, symbol.end_line),
-                filepath=relative_path,
-                function_name=symbol.name,
-                start_line=symbol.start_line,
-                end_line=symbol.end_line,
-                docstring=docstring,
-                source=source_text,
-                language=PYTHON_LANGUAGE,
+        chunk = Chunk(
+            id=make_chunk_id(relative_path, symbol.name, symbol.start_line, symbol.end_line),
+            filepath=relative_path,
+            function_name=symbol.name,
+            start_line=symbol.start_line,
+            end_line=symbol.end_line,
+            docstring=docstring,
+            source=source_text,
+            language=PYTHON_LANGUAGE,
+        )
+        chunks.extend(
+            split_oversized_chunk(
+                chunk,
+                max_chunk_lines=max_chunk_lines,
+                chunk_overlap_lines=chunk_overlap_lines,
             )
         )
     return chunks
+
+
+def split_oversized_chunk(
+    chunk: Chunk,
+    *,
+    max_chunk_lines: int | None,
+    chunk_overlap_lines: int = DEFAULT_CHUNK_OVERLAP_LINES,
+) -> list[Chunk]:
+    """Split a large chunk into overlapping linked parts.
+
+    The returned parts keep the original `filepath` and `function_name`, so a
+    retriever can recover neighboring parts from the same symbol after one part
+    matches the query.
+    """
+
+    if max_chunk_lines is None:
+        return [chunk]
+    if max_chunk_lines <= 0:
+        raise ValueError("max_chunk_lines must be positive when provided.")
+    if chunk_overlap_lines < 0:
+        raise ValueError("chunk_overlap_lines cannot be negative.")
+    if chunk_overlap_lines >= max_chunk_lines:
+        raise ValueError("chunk_overlap_lines must be smaller than max_chunk_lines.")
+
+    line_count = chunk.end_line - chunk.start_line + 1
+    if line_count <= max_chunk_lines:
+        return [chunk]
+
+    source_lines = chunk.source.splitlines()
+    windows = _split_line_windows(line_count, max_chunk_lines=max_chunk_lines, chunk_overlap_lines=chunk_overlap_lines)
+    parts: list[Chunk] = []
+    for part_index, window in enumerate(windows, start=1):
+        start_line = chunk.start_line + window.start
+        end_line = chunk.start_line + window.end - 1
+        source = "\n".join(source_lines[window.start : window.end])
+        parts.append(
+            Chunk(
+                id=make_chunk_id(
+                    chunk.filepath,
+                    f"{chunk.function_name}:part:{part_index}/{len(windows)}",
+                    start_line,
+                    end_line,
+                ),
+                filepath=chunk.filepath,
+                function_name=chunk.function_name,
+                start_line=start_line,
+                end_line=end_line,
+                docstring=chunk.docstring,
+                source=source,
+                language=chunk.language,
+            )
+        )
+    return parts
 
 
 def make_chunk_id(filepath: str, function_name: str, start_line: int, end_line: int) -> str:
@@ -129,9 +220,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract semantic Python chunks from a repository.")
     parser.add_argument("--repo", required=True, help="Repository or directory path to scan.")
     parser.add_argument("--json", action="store_true", help="Emit all chunks as JSON.")
+    parser.add_argument(
+        "--max-chunk-lines",
+        type=int,
+        help="Split symbols longer than this many lines into overlapping linked subchunks.",
+    )
+    parser.add_argument(
+        "--chunk-overlap-lines",
+        type=int,
+        default=DEFAULT_CHUNK_OVERLAP_LINES,
+        help="Line overlap between subchunks created by --max-chunk-lines.",
+    )
     args = parser.parse_args(argv)
 
-    chunks = chunk_repository(args.repo)
+    chunks = chunk_repository(
+        args.repo,
+        max_chunk_lines=args.max_chunk_lines,
+        chunk_overlap_lines=args.chunk_overlap_lines,
+    )
     if args.json:
         print(json.dumps([chunk.to_dict() for chunk in chunks], indent=2))
         return 0
@@ -291,6 +397,18 @@ def _extract_symbol_ranges_with_ast(source: str) -> list[_SymbolRange]:
 
     Visitor().visit(tree)
     return symbols
+
+
+def _split_line_windows(line_count: int, *, max_chunk_lines: int, chunk_overlap_lines: int) -> list[_LineWindow]:
+    windows: list[_LineWindow] = []
+    start = 0
+    while start < line_count:
+        end = min(start + max_chunk_lines, line_count)
+        windows.append(_LineWindow(start=start, end=end))
+        if end == line_count:
+            break
+        start = end - chunk_overlap_lines
+    return windows
 
 
 def _load_tree_sitter_parser() -> object | None:

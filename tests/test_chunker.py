@@ -3,7 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from src.chunker import chunk_repository, make_chunk_id
+from src.chunker import chunk_repository, make_chunk_id, split_oversized_chunk
+from src.schema import Chunk
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_REPO = PROJECT_ROOT / "tests" / "fixtures" / "sample_python_project"
@@ -52,6 +53,26 @@ def test_chunk_ids_are_stable() -> None:
 
     assert [chunk.id for chunk in first] == [chunk.id for chunk in second]
     assert make_chunk_id("sample.py", "top_level", 4, 7) == chunks_id(first, "top_level")
+
+
+def test_split_oversized_chunk_keeps_symbol_linkage() -> None:
+    chunk = Chunk(
+        id="original",
+        filepath="src/big.py",
+        function_name="Big.method",
+        start_line=10,
+        end_line=17,
+        docstring="Large method.",
+        source="\n".join(f"line {line}" for line in range(10, 18)),
+        language="python",
+    )
+
+    parts = split_oversized_chunk(chunk, max_chunk_lines=4, chunk_overlap_lines=1)
+
+    assert [part.function_name for part in parts] == ["Big.method", "Big.method", "Big.method"]
+    assert [(part.start_line, part.end_line) for part in parts] == [(10, 13), (13, 16), (16, 17)]
+    assert len({part.id for part in parts}) == 3
+    assert all(part.docstring == "Large method." for part in parts)
 
 
 def test_cli_prints_summary() -> None:

@@ -200,11 +200,16 @@
     "expected_refusal": false
   },
   {
-    "id": "out-of-scope-dense-index",
+    "id": "dense-index-module",
     "question": "Which module implements GraphCodeBERT dense retrieval in this repository?",
-    "ground_truth_answer": "I cannot find this in the codebase. Dense GraphCodeBERT retrieval is described as a future task, but no dense index module is implemented yet.",
-    "ground_truth_context": [],
-    "expected_refusal": true
+    "ground_truth_answer": "GraphCodeBERT dense retrieval is implemented in src/index_dense.py. The module builds embeddings, persists them in ChromaDB, and exposes query_dense for dense search.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/index_dense.py",
+        "function_name": "query_dense"
+      }
+    ],
+    "expected_refusal": false
   },
   {
     "id": "out-of-scope-generator",

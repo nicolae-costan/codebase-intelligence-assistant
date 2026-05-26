@@ -115,6 +115,59 @@ Each chunk includes:
 - `source`
 - `language`
 
+## Dense Retrieval
+
+T4 implements GraphCodeBERT dense retrieval with ChromaDB persistence. It embeds semantic chunks with `microsoft/graphcodebert-base`, caches vectors in `data/chunks/embeddings.pkl`, and stores a queryable Chroma index in `index/chroma_db/`.
+
+Build a dense index for a local repository:
+
+```bash
+python -m src.index_dense --repo tests/fixtures/sample_python_project
+```
+
+Build and query in one command:
+
+```bash
+python -m src.index_dense --repo tests/fixtures/sample_python_project --query "where is greeting built" --top-k 3
+```
+
+For large repositories, filter the indexed paths when you want implementation code rather than tests or docs:
+
+```bash
+python -m src.index_dense \
+  --repo data/raw/fastapi \
+  --include-path-prefix fastapi \
+  --exclude-tests \
+  --query "where is request validation handled?" \
+  --top-k 5
+```
+
+Oversized functions and classes are split into overlapping linked subchunks by default during dense indexing. When a subchunk matches, `--linked-window` includes neighboring parts from the same symbol in the query output:
+
+```bash
+python -m src.index_dense \
+  --repo data/raw/fastapi \
+  --include-path-prefix fastapi \
+  --max-chunk-lines 220 \
+  --chunk-overlap-lines 20 \
+  --linked-window 1 \
+  --query "where is request validation handled?" \
+  --top-k 5
+```
+
+Use it from code:
+
+```python
+from src.chunker import chunk_repository
+from src.index_dense import index_chunks, query_dense
+
+chunks = chunk_repository("tests/fixtures/sample_python_project")
+index_chunks(chunks)
+results = query_dense("where is the greeting assembled?", k=3)
+```
+
+The first run downloads the HuggingFace model and can be slow on CPU. Subsequent runs reuse the embedding cache unless chunk content, chunk ids, or model name change.
+
 ## Evaluation Harness
 
 T3 adds a manual question-answer evaluation set and a small harness that can score any pipeline function shaped like `pipeline_fn(question) -> answer_or_result`. The committed test set lives in `eval/test_set.json` and includes answerable questions, expected source contexts, and out-of-scope refusal cases.

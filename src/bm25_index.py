@@ -24,12 +24,16 @@ Typical usage::
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
 import logging
 import pickle
 import re
 from pathlib import Path
 from typing import Sequence
 
+from src.chunker import chunk_repository
 from src.schema import Chunk
 
 logger = logging.getLogger(__name__)
@@ -44,7 +48,8 @@ DEFAULT_INDEX_PATH = Path("index/bm25/bm25.pkl")
 # Tokenization
 # ---------------------------------------------------------------------------
 
-_CAMEL_CASE_RE = re.compile(r"([a-z])([A-Z])")
+_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_CASE_RE = re.compile(r"([a-z0-9])([A-Z])")
 _NON_WORD_RE = re.compile(r"[^a-zA-Z0-9]+")
 
 
@@ -52,8 +57,9 @@ def tokenize(text: str) -> list[str]:
     """Split *text* into lowercase tokens, handling camelCase and snake_case.
 
     Steps:
-    1. Insert a space before every uppercase letter that follows a lowercase
-       letter (e.g. ``processPayment`` → ``process Payment``).
+    1. Insert spaces at acronym and camelCase boundaries, e.g.
+       ``HTTPSConnection`` → ``HTTPS Connection`` and ``processPayment`` →
+       ``process Payment``.
     2. Split on any run of non-alphanumeric characters (covers ``_``, ``-``,
        whitespace, punctuation, …).
     3. Lowercase and discard empty tokens.
@@ -65,10 +71,10 @@ def tokenize(text: str) -> list[str]:
         >>> tokenize("get_user_by_id")
         ['get', 'user', 'by', 'id']
         >>> tokenize("HTTPSConnection")
-        ['h', 't', 't', 'p', 's', 'connection']
+        ['https', 'connection']
     """
-    # camelCase split
-    expanded = _CAMEL_CASE_RE.sub(r"\1 \2", text)
+    expanded = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
+    expanded = _CAMEL_CASE_RE.sub(r"\1 \2", expanded)
     # split on non-word chars (handles snake_case, kebab-case, whitespace…)
     raw_tokens = _NON_WORD_RE.split(expanded)
     return [t.lower() for t in raw_tokens if t]
@@ -97,9 +103,10 @@ class BM25Index:
         chunks: The ordered list of chunks that were indexed.
     """
 
-    def __init__(self, chunks: list[Chunk], _bm25: object) -> None:
+    def __init__(self, chunks: list[Chunk], _bm25: object, fingerprint: str | None = None) -> None:
         self._chunks = chunks
         self._bm25 = _bm25
+        self._fingerprint = fingerprint or fingerprint_chunks(chunks)
 
     # ------------------------------------------------------------------
     # Construction
@@ -134,7 +141,7 @@ class BM25Index:
         corpus = [tokenize(_chunk_document(c)) for c in chunk_list]
         bm25 = BM25Okapi(corpus)
         logger.info("Built BM25 index over %d chunks.", len(chunk_list))
-        return cls(chunk_list, bm25)
+        return cls(chunk_list, bm25, fingerprint=fingerprint_chunks(chunk_list))
 
     # ------------------------------------------------------------------
     # Querying
@@ -208,6 +215,10 @@ class BM25Index:
             raise FileNotFoundError(f"BM25 index file not found: {src_path}")
         with src_path.open("rb") as fh:
             index = pickle.load(fh)
+        if not isinstance(index, cls):
+            raise TypeError(f"Pickle at {src_path} did not contain a BM25Index.")
+        if not hasattr(index, "_fingerprint"):
+            index._fingerprint = fingerprint_chunks(index._chunks)
         logger.info("BM25 index loaded from %s (%d chunks).", src_path, len(index._chunks))
         return index
 
@@ -224,6 +235,11 @@ class BM25Index:
     def chunks(self) -> list[Chunk]:
         """The ordered list of chunks that were indexed."""
         return list(self._chunks)
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable fingerprint of the chunks used to build the index."""
+        return self._fingerprint
 
     def __len__(self) -> int:
         return len(self._chunks)
@@ -258,24 +274,91 @@ def build_and_save(
     return index
 
 
+def fingerprint_chunks(chunks: Sequence[Chunk]) -> str:
+    """Return a stable fingerprint for a chunk sequence."""
+
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        digest.update(chunk.id.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(chunk.filepath.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(chunk.function_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(chunk.start_line).encode("ascii"))
+        digest.update(b":")
+        digest.update(str(chunk.end_line).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(_chunk_document(chunk).encode("utf-8"))
+        digest.update(b"\0\0")
+    return digest.hexdigest()
+
+
 def load_or_build(
     chunks: Sequence[Chunk],
     path: str | Path = DEFAULT_INDEX_PATH,
+    *,
+    force_rebuild: bool = False,
 ) -> BM25Index:
     """Load the index from disk if it exists, otherwise build and save it.
 
     This is the recommended startup pattern: call this once with all chunks
-    and the function will reuse a cached index whenever possible.
+    and the function will reuse a cached index whenever the persisted index
+    fingerprint matches the current chunks.
 
     Args:
         chunks: Chunks to use if the index must be built from scratch.
         path: Pickle file path (default: ``index/bm25/bm25.pkl``).
+        force_rebuild: Rebuild the index even if a matching pickle exists.
 
     Returns:
         A ready-to-query :class:`BM25Index`.
     """
-    if BM25Index.exists(path):
+    chunk_list = list(chunks)
+    expected_fingerprint = fingerprint_chunks(chunk_list)
+    if BM25Index.exists(path) and not force_rebuild:
         logger.info("Found existing BM25 index at %s, loading from disk.", path)
-        return BM25Index.load(path)
+        index = BM25Index.load(path)
+        if index.fingerprint == expected_fingerprint:
+            return index
+        logger.info("Existing BM25 index is stale; rebuilding %s.", path)
     logger.info("No BM25 index found at %s, building from scratch.", path)
-    return build_and_save(chunks, path)
+    return build_and_save(chunk_list, path)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Build or query the BM25 sparse index from the command line."""
+
+    parser = argparse.ArgumentParser(description="Build and query a BM25 sparse index.")
+    parser.add_argument("--repo", required=True, help="Repository or directory path to chunk and index.")
+    parser.add_argument("--query", help="Optional query to run after indexing.")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of BM25 results to return for --query.")
+    parser.add_argument("--index-path", default=str(DEFAULT_INDEX_PATH), help="BM25 pickle path.")
+    parser.add_argument("--force-rebuild", action="store_true", help="Ignore any existing BM25 pickle.")
+    parser.add_argument("--json", action="store_true", help="Emit query results as JSON.")
+    args = parser.parse_args(argv)
+
+    chunks = chunk_repository(args.repo)
+    index = load_or_build(chunks, args.index_path, force_rebuild=args.force_rebuild)
+
+    if not args.json:
+        print(f"Indexed {len(index)} chunks")
+        print(f"BM25 index: {Path(args.index_path)}")
+
+    if args.query:
+        results = index.query_bm25(args.query, k=args.top_k)
+        if args.json:
+            print(json.dumps([chunk.to_dict() for chunk in results], indent=2))
+        else:
+            print()
+            print(f"Top {len(results)} BM25 results")
+            for rank, chunk in enumerate(results, start=1):
+                print(
+                    f"{rank}. {chunk.filepath}::{chunk.function_name} "
+                    f"lines {chunk.start_line}-{chunk.end_line}"
+                )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

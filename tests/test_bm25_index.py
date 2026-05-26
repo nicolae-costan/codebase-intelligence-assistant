@@ -11,6 +11,7 @@ from src.bm25_index import (
     BM25Index,
     DEFAULT_INDEX_PATH,
     build_and_save,
+    fingerprint_chunks,
     load_or_build,
     tokenize,
 )
@@ -81,6 +82,12 @@ class TestTokenize:
 
     def test_multiple_spaces(self):
         assert tokenize("a   b") == ["a", "b"]
+
+    def test_acronym_boundary(self):
+        assert tokenize("HTTPSConnection") == ["https", "connection"]
+
+    def test_acronym_plus_camel_case(self):
+        assert tokenize("HTTPRequestParser") == ["http", "request", "parser"]
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +201,14 @@ class TestPersistence:
         loaded = BM25Index.load(dest)
         assert len(loaded) == 2
         assert {c.function_name for c in loaded.chunks} == {"alpha", "beta"}
+        assert loaded.fingerprint == idx.fingerprint
+
+    def test_load_rejects_non_index_pickle(self, tmp_path: Path):
+        dest = tmp_path / "not_bm25.pkl"
+        dest.write_bytes(pickle.dumps({"not": "an index"}))
+
+        with pytest.raises(TypeError):
+            BM25Index.load(dest)
 
     def test_load_preserves_query_results(self, tmp_path: Path):
         # Need ≥ 4 chunks: BM25Okapi IDF = log((N-f+0.5)/(f+0.5)).
@@ -261,3 +276,24 @@ class TestConvenienceHelpers:
         loaded = load_or_build(chunks, dest)
         assert dest.stat().st_mtime == mtime_before
         assert len(loaded) == len(original)
+
+    def test_load_or_build_rebuilds_when_chunks_change(self, tmp_path: Path):
+        dest = tmp_path / "bm25.pkl"
+        original_chunks = [_make_chunk("foo")]
+        changed_chunks = [_make_chunk("bar")]
+
+        original = build_and_save(original_chunks, dest)
+        loaded = load_or_build(changed_chunks, dest)
+
+        assert loaded.fingerprint != original.fingerprint
+        assert loaded.fingerprint == fingerprint_chunks(changed_chunks)
+        assert [chunk.function_name for chunk in loaded.chunks] == ["bar"]
+
+    def test_load_or_build_force_rebuilds(self, tmp_path: Path):
+        chunks = [_make_chunk("foo")]
+        dest = tmp_path / "bm25.pkl"
+
+        original = build_and_save(chunks, dest)
+        loaded = load_or_build(chunks, dest, force_rebuild=True)
+
+        assert loaded.fingerprint == original.fingerprint

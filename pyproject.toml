@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "chromadb>=0.5,<1.0",
     "gitpython>=3.1,<4.0",
+    "openai>=1.0,<2.0",
     "rank-bm25>=0.2.2",
     "torch>=2.2,<3.0",
     "tree-sitter>=0.20.1,<0.21",

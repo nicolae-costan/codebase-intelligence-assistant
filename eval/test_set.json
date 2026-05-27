@@ -212,9 +212,21 @@
     "expected_refusal": false
   },
   {
-    "id": "out-of-scope-generator",
+    "id": "generator-ollama-endpoint",
     "question": "What Ollama endpoint does the generator module use?",
-    "ground_truth_answer": "I cannot find this in the codebase. There is no generator module implemented yet.",
+    "ground_truth_answer": "The generator uses OLLAMA_BASE_URL when it is set, otherwise it defaults to http://localhost:11434/v1 for Ollama's OpenAI-compatible API.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/generator.py",
+        "function_name": "_make_openai_client"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "out-of-scope-streamlit-ui",
+    "question": "Where is the Streamlit chat UI implemented?",
+    "ground_truth_answer": "I cannot find this in the codebase. There is no Streamlit chat UI implemented yet.",
     "ground_truth_context": [],
     "expected_refusal": true
   }

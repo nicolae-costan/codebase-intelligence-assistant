@@ -168,6 +168,36 @@ results = query_dense("where is the greeting assembled?", k=3)
 
 The first run downloads the HuggingFace model and can be slow on CPU. Subsequent runs reuse the embedding cache unless chunk content, chunk ids, or model name change.
 
+## Generation
+
+T8 implements a standalone Ollama generation wrapper for hardcoded or retrieved chunks. Install and run the local model with Ollama:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+By default, generation uses `http://localhost:11434/v1`. Override it when Ollama runs elsewhere:
+
+```bash
+export OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
+The API key defaults to `ollama`, or you can set `OLLAMA_API_KEY` if your endpoint requires one.
+
+Run a hardcoded-context smoke test:
+
+```bash
+python -m src.generator --fixture --query "What does Greeter.greet do?"
+```
+
+Use it from code:
+
+```python
+from src.generator import generate
+
+answer = generate(context_chunks=[chunk], query="What does this function do?")
+```
+
 ## Evaluation Harness
 
 T3 adds a manual question-answer evaluation set and a small harness that can score any pipeline function shaped like `pipeline_fn(question) -> answer_or_result`. The committed test set lives in `eval/test_set.json` and includes answerable questions, expected source contexts, and out-of-scope refusal cases.

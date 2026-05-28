@@ -15,6 +15,8 @@ from src.schema import Chunk
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_API_KEY = "ollama"
+DEFAULT_MAX_CONTEXT_CHARS = 24000
+DEFAULT_MAX_CHUNK_CHARS = 8000
 REFUSAL_ANSWER = "I cannot find this in the codebase."
 
 SYSTEM_PROMPT = """You are a codebase assistant. Answer questions strictly using the provided source code snippets.
@@ -42,9 +44,28 @@ class _NormalizedChunk:
     source: str
 
 
-def format_context_chunks(context_chunks: Sequence[Chunk | Mapping[str, object]]) -> str:
+def format_context_chunks(
+    context_chunks: Sequence[Chunk | Mapping[str, object]],
+    *,
+    max_context_chars: int | None = DEFAULT_MAX_CONTEXT_CHARS,
+    max_chunk_chars: int | None = DEFAULT_MAX_CHUNK_CHARS,
+) -> str:
     """Render chunks into a cited source context for the generator."""
 
+    context, _count = _render_context_chunks(
+        context_chunks,
+        max_context_chars=max_context_chars,
+        max_chunk_chars=max_chunk_chars,
+    )
+    return context
+
+
+def _render_context_chunks(
+    context_chunks: Sequence[Chunk | Mapping[str, object]],
+    *,
+    max_context_chars: int | None,
+    max_chunk_chars: int | None,
+) -> tuple[str, int]:
     rendered: list[str] = []
     for index, raw_chunk in enumerate(context_chunks, start=1):
         chunk = _normalize_chunk(raw_chunk)
@@ -53,9 +74,15 @@ def format_context_chunks(context_chunks: Sequence[Chunk | Mapping[str, object]]
         if chunk.docstring:
             parts.append(f"Docstring: {chunk.docstring}")
         parts.append("Source:")
-        parts.append(chunk.source)
-        rendered.append("\n".join(parts))
-    return "\n\n---\n\n".join(rendered)
+        parts.append(_limit_text(chunk.source, max_chunk_chars))
+        block = "\n".join(parts)
+        candidate = "\n\n---\n\n".join([*rendered, block]) if rendered else block
+        if max_context_chars is not None and len(candidate) > max_context_chars:
+            if not rendered:
+                rendered.append(_limit_text(block, max_context_chars))
+            break
+        rendered.append(block)
+    return "\n\n---\n\n".join(rendered), len(rendered)
 
 
 def generate(
@@ -67,16 +94,26 @@ def generate(
     base_url: str | None = None,
     api_key: str | None = None,
     client: Any | None = None,
+    max_context_chars: int | None = DEFAULT_MAX_CONTEXT_CHARS,
+    max_chunk_chars: int | None = DEFAULT_MAX_CHUNK_CHARS,
 ) -> str:
     """Generate a grounded answer from supplied source chunks."""
 
     if not context_chunks:
         return REFUSAL_ANSWER
 
+    context, context_count = _render_context_chunks(
+        context_chunks,
+        max_context_chars=max_context_chars,
+        max_chunk_chars=max_chunk_chars,
+    )
+    if context_count == 0:
+        return REFUSAL_ANSWER
+
     resolved_client = client or _make_openai_client(base_url=base_url, api_key=api_key)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": _build_user_message(format_context_chunks(context_chunks), query)},
+        {"role": "user", "content": _build_user_message(context, query)},
     ]
     response = resolved_client.chat.completions.create(
         model=model,
@@ -88,6 +125,8 @@ def generate(
         return REFUSAL_ANSWER
     stripped_answer = answer.strip()
     if not _CITATION_RE.search(stripped_answer):
+        return REFUSAL_ANSWER
+    if _has_invalid_citations(stripped_answer, context_count):
         return REFUSAL_ANSWER
     if _missing_required_identifiers(query, stripped_answer):
         return REFUSAL_ANSWER
@@ -131,6 +170,19 @@ Source snippets:
 {context}
 
 Answer strictly from the source snippets above. Use snippet citations like [1] in every bullet."""
+
+
+def _limit_text(text: str, max_chars: int | None) -> str:
+    if max_chars is None or len(text) <= max_chars:
+        return text
+    if max_chars <= len("\n...[truncated]"):
+        return text[:max_chars]
+    return text[: max_chars - len("\n...[truncated]")].rstrip() + "\n...[truncated]"
+
+
+def _has_invalid_citations(answer: str, context_count: int) -> bool:
+    citations = [int(match[1:-1]) for match in _CITATION_RE.findall(answer)]
+    return any(citation < 1 or citation > context_count for citation in citations)
 
 
 def _missing_required_identifiers(query: str, answer: str) -> bool:

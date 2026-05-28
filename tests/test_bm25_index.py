@@ -169,6 +169,32 @@ class TestQueryBM25:
         results = index.query_bm25("sendInvoice", k=1)
         assert results[0].function_name == "send_invoice"
 
+    def test_natural_language_handler_query_keeps_identifier_signal(self):
+        chunks = [
+            _make_chunk(
+                "is_union_of_base_models",
+                source="def is_union_of_base_models(field_type): return True",
+            ),
+            _make_chunk(
+                "request_validation_exception_handler",
+                source=(
+                    "async def request_validation_exception_handler(request, exc: RequestValidationError):\n"
+                    "    return JSONResponse(status_code=422)"
+                ),
+            ),
+            _make_chunk(
+                "RequestValidationError",
+                source="class RequestValidationError(ValidationException): pass",
+            ),
+            _make_chunk("get_request_handler", source="def get_request_handler(): pass"),
+            _make_chunk("get_user", source="def get_user(): pass"),
+        ]
+        idx = BM25Index.build(chunks)
+
+        results = idx.query_bm25("Where is RequestValidationError handled?", k=1)
+
+        assert results[0].function_name == "request_validation_exception_handler"
+
 
 # ---------------------------------------------------------------------------
 # Persistence — save / load

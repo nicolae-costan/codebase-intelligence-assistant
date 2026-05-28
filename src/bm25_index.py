@@ -53,6 +53,43 @@ _PERSISTENCE_VERSION = 1
 _ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
 _CAMEL_CASE_RE = re.compile(r"([a-z0-9])([A-Z])")
 _NON_WORD_RE = re.compile(r"[^a-zA-Z0-9]+")
+_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "does",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+    }
+)
+_QUERY_TOKEN_EXPANSIONS = {
+    "handled": ("handle", "handler"),
+    "handles": ("handle", "handler"),
+    "handling": ("handle", "handler"),
+}
 
 
 def tokenize(text: str) -> list[str]:
@@ -80,6 +117,19 @@ def tokenize(text: str) -> list[str]:
     # split on non-word chars (handles snake_case, kebab-case, whitespace…)
     raw_tokens = _NON_WORD_RE.split(expanded)
     return [t.lower() for t in raw_tokens if t]
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Normalize natural-language queries without changing the indexed corpus."""
+
+    tokens = tokenize(query)
+    expanded: list[str] = []
+    for token in tokens:
+        expanded.append(token)
+        expanded.extend(_QUERY_TOKEN_EXPANSIONS.get(token, ()))
+
+    filtered = [token for token in expanded if token not in _QUERY_STOPWORDS]
+    return filtered or expanded
 
 
 def _chunk_document(chunk: Chunk) -> str:
@@ -166,7 +216,7 @@ class BM25Index:
         if not query.strip():
             return []
 
-        tokens = tokenize(query)
+        tokens = _query_tokens(query)
         scores = self._bm25.get_scores(tokens)
 
         # Pair each chunk with its score, filter zeros, sort descending

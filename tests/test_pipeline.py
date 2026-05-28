@@ -31,6 +31,16 @@ class FakeGenerator:
         return self.answers[len(self.calls) - 1]
 
 
+class FakeConfidenceEstimator:
+    def __init__(self, result: dict[str, object]) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, **kwargs) -> dict[str, object]:
+        self.calls.append(kwargs)
+        return self.result
+
+
 def test_single_mode_calls_retriever_and_generator_once() -> None:
     retriever = FakeRetriever([[{"chunk": _chunk("first").to_dict(), "score": 0.9}]])
     generator = FakeGenerator(["final answer"])
@@ -51,6 +61,7 @@ def test_single_mode_calls_retriever_and_generator_once() -> None:
     assert result["retrieved_chunks"] == [_chunk_dict("first")]
     assert result["mode"] == "single"
     assert "partial_answer" not in result
+    assert "confidence_score" not in result
 
 
 def test_single_pass_rag_wraps_single_mode() -> None:
@@ -107,6 +118,116 @@ def test_final_answer_uses_second_pass_chunks_not_first_pass_chunks() -> None:
 
     assert result["answer"] == "answer from fresh"
     assert result["retrieved_chunks"] == [_chunk_dict("fresh")]
+
+
+def test_pipeline_expands_linked_chunks_with_deduplication() -> None:
+    retriever = FakeRetriever(
+        [
+            [
+                {
+                    "chunk": _chunk_dict("primary"),
+                    "linked_chunks": [_chunk_dict("neighbor"), _chunk_dict("primary")],
+                }
+            ]
+        ]
+    )
+    generator = FakeGenerator(["answer"])
+
+    result = iterative_rag("How does the big symbol work?", retriever=retriever, generator_fn=generator, log_path=None)
+
+    assert generator.calls[0] == ([_chunk_dict("primary"), _chunk_dict("neighbor")], "How does the big symbol work?")
+    assert result["retrieved_chunks"] == [_chunk_dict("primary"), _chunk_dict("neighbor")]
+
+
+def test_iterative_mode_skips_second_pass_when_first_pass_refuses() -> None:
+    retriever = FakeRetriever([[_chunk("first")]])
+    generator = FakeGenerator([REFUSAL_ANSWER])
+
+    result = iterative_rag(
+        "Unknown?",
+        mode="iterative",
+        retriever=retriever,
+        generator_fn=generator,
+        log_path=None,
+    )
+
+    assert retriever.calls == [("Unknown?", 7)]
+    assert generator.calls == [([_chunk_dict("first")], "Unknown?")]
+    assert result["answer"] == REFUSAL_ANSWER
+    assert result["trace"]["pass_2"] == {"skipped": "pass_1_refused"}
+
+
+def test_confidence_uses_final_iterative_chunks_and_adds_metadata() -> None:
+    retriever = FakeRetriever([[_chunk("stale")], [_chunk("fresh")]])
+    generator = FakeGenerator(["partial answer", "final answer"])
+    confidence_estimator = FakeConfidenceEstimator(
+        {
+            "answer": "confidence answer from fresh",
+            "confidence": 0.91,
+            "level": "high",
+            "should_refuse": False,
+            "raw_answers": ["confidence answer from fresh"],
+        }
+    )
+
+    result = iterative_rag(
+        "Which chunk wins?",
+        mode="iterative",
+        retriever=retriever,
+        generator_fn=generator,
+        confidence=True,
+        confidence_threshold=0.8,
+        confidence_log_path=None,
+        confidence_estimator=confidence_estimator,
+        log_path=None,
+    )
+
+    assert result["answer"] == "confidence answer from fresh"
+    assert result["retrieved_chunks"] == [_chunk_dict("fresh")]
+    assert result["confidence_score"] == 0.91
+    assert result["confidence_level"] == "high"
+    assert result["low_confidence"] is False
+    [call] = confidence_estimator.calls
+    assert call["query"] == "Which chunk wins?"
+    assert call["context_chunks"] == [_chunk_dict("fresh")]
+    assert call["generator_fn"] is generator
+    assert call["threshold"] == 0.8
+    assert call["log_path"] is None
+
+
+def test_low_confidence_is_surfaced_without_changing_retrieved_chunks() -> None:
+    retriever = FakeRetriever([[_chunk("first")]])
+    generator = FakeGenerator(["normal answer"])
+    confidence_estimator = FakeConfidenceEstimator(
+        {
+            "answer": "uncertain answer",
+            "confidence": 0.41,
+            "level": "low",
+            "should_refuse": True,
+            "warning": "Low confidence: answer agreement 0.41 is below the configured threshold 0.72.",
+            "raw_answers": ["uncertain answer"],
+        }
+    )
+
+    result = iterative_rag(
+        "What happens?",
+        retriever=retriever,
+        generator_fn=generator,
+        confidence=True,
+        confidence_estimator=confidence_estimator,
+        log_path=None,
+        confidence_log_path=None,
+    )
+
+    assert result["answer"] == REFUSAL_ANSWER
+    assert result["confidence_candidate_answer"] == "uncertain answer"
+    assert result["retrieved_chunks"] == [_chunk_dict("first")]
+    assert result["confidence_score"] == 0.41
+    assert result["confidence_level"] == "low"
+    assert result["low_confidence"] is True
+    assert result["confidence_warning"] == "Low confidence: answer agreement 0.41 is below the configured threshold 0.72."
+    assert result["confidence_details"]["should_refuse"] is True
+    assert result["confidence_details"]["answer"] == "uncertain answer"
 
 
 def test_empty_retrieval_uses_generator_refusal_behavior() -> None:
@@ -168,6 +289,8 @@ def test_cli_help_is_available_without_retriever_or_ollama() -> None:
 
     assert "Run single-pass or iterative RAG" in result.stdout
     assert "--mode" in result.stdout
+    assert "--confidence" in result.stdout
+    assert "--confidence-threshold" in result.stdout
 
 
 def _chunk(chunk_id: str) -> Chunk:

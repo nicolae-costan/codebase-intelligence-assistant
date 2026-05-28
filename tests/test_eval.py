@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from eval.run_eval import DEFAULT_TEST_SET_PATH, load_test_set, run_eval
+from eval.run_eval import DEFAULT_TEST_SET_PATH, _normalize_pipeline_output, load_test_set, run_eval
 
 
 def test_committed_test_set_loads_with_required_fields() -> None:
@@ -87,6 +87,18 @@ def test_run_eval_accepts_nested_chunk_outputs(tmp_path: Path) -> None:
 
     assert metrics["records"][0]["retrieved_contexts"] == [{"filepath": "src/schema.py", "function_name": "Chunk"}]
     assert metrics["context_recall"] == 1.0
+
+
+def test_pipeline_output_preserves_retrieved_sources_for_ragas() -> None:
+    output = _normalize_pipeline_output(
+        {
+            "answer": "run returns 1.",
+            "retrieved_chunks": [{"filepath": "src/app.py", "function_name": "run", "source": "def run():\n    return 1\n"}],
+        }
+    )
+
+    assert output.retrieved_contexts[0].filepath == "src/app.py"
+    assert output.retrieved_sources == ["def run():\n    return 1\n"]
 
 
 def test_ragas_path_degrades_when_optional_dependencies_are_missing(tmp_path: Path) -> None:

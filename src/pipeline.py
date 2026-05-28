@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.confidence import DEFAULT_CONFIDENCE_LOG_PATH, DEFAULT_CONFIDENCE_THRESHOLD
+from src.generator import REFUSAL_ANSWER
 from src.schema import Chunk
 
 DEFAULT_TOP_K = 7
@@ -18,7 +20,8 @@ DEFAULT_LOG_PATH = Path("results/iterative_retrieval.jsonl")
 VALID_MODES = {"single", "iterative"}
 
 RetrieverFn = Callable[[str, int], Sequence[Any]]
-GeneratorFn = Callable[[Sequence[Mapping[str, object]], str], str]
+GeneratorFn = Callable[..., str]
+ConfidenceEstimatorFn = Callable[..., Any]
 
 
 def iterative_rag(
@@ -29,6 +32,10 @@ def iterative_rag(
     retriever: RetrieverFn | None = None,
     generator_fn: GeneratorFn | None = None,
     log_path: str | Path | None = DEFAULT_LOG_PATH,
+    confidence: bool = False,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    confidence_log_path: str | Path | None = DEFAULT_CONFIDENCE_LOG_PATH,
+    confidence_estimator: ConfidenceEstimatorFn | None = None,
 ) -> dict[str, object]:
     """Run single-pass or two-pass iterative RAG for a user query.
 
@@ -61,7 +68,7 @@ def iterative_rag(
         "mode": mode,
     }
 
-    if mode == "iterative":
+    if mode == "iterative" and pass_1.answer != REFUSAL_ANSWER:
         pass_2 = iterative_pass(
             query=query,
             partial_answer=pass_1.answer,
@@ -73,6 +80,19 @@ def iterative_rag(
         result["answer"] = pass_2.answer
         result["retrieved_chunks"] = pass_2.chunks
         result["partial_answer"] = pass_1.answer
+    elif mode == "iterative":
+        trace["pass_2"] = {"skipped": "pass_1_refused"}
+        result["partial_answer"] = pass_1.answer
+
+    if confidence:
+        _apply_confidence(
+            result,
+            query=query,
+            generator_fn=generate_fn,
+            threshold=confidence_threshold,
+            log_path=confidence_log_path,
+            confidence_estimator=confidence_estimator,
+        )
 
     result["trace"] = trace | {"total_ms": _elapsed_ms(total_start)}
     _append_log_record(result, query=query, top_k=top_k, log_path=log_path)
@@ -86,6 +106,10 @@ def single_pass_rag(
     retriever: RetrieverFn | None = None,
     generator_fn: GeneratorFn | None = None,
     log_path: str | Path | None = DEFAULT_LOG_PATH,
+    confidence: bool = False,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    confidence_log_path: str | Path | None = DEFAULT_CONFIDENCE_LOG_PATH,
+    confidence_estimator: ConfidenceEstimatorFn | None = None,
 ) -> dict[str, object]:
     """Run the pass-1-only RAG ablation."""
 
@@ -96,6 +120,10 @@ def single_pass_rag(
         retriever=retriever,
         generator_fn=generator_fn,
         log_path=log_path,
+        confidence=confidence,
+        confidence_threshold=confidence_threshold,
+        confidence_log_path=confidence_log_path,
+        confidence_estimator=confidence_estimator,
     )
 
 
@@ -126,6 +154,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--query", required=True, help="Question to answer from retrieved source context.")
     parser.add_argument("--mode", choices=sorted(VALID_MODES), default="single", help="RAG orchestration mode.")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="Number of chunks to retrieve per pass.")
+    parser.add_argument("--confidence", action="store_true", help="Estimate answer confidence with HonestCoder.")
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=DEFAULT_CONFIDENCE_THRESHOLD,
+        help="Minimum confidence score before flagging a low-confidence answer.",
+    )
+    parser.add_argument(
+        "--confidence-log-path",
+        default=str(DEFAULT_CONFIDENCE_LOG_PATH),
+        help="JSONL confidence log path. Use 'none' to disable confidence logging.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit the full pipeline result as JSON.")
     parser.add_argument(
         "--log-path",
@@ -138,8 +178,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if log_path.lower() in {"", "none", "null"}:
         log_path = None
 
+    confidence_log_path: str | None = args.confidence_log_path
+    if confidence_log_path.lower() in {"", "none", "null"}:
+        confidence_log_path = None
+
     try:
-        result = iterative_rag(args.query, mode=args.mode, top_k=args.top_k, log_path=log_path)
+        result = iterative_rag(
+            args.query,
+            mode=args.mode,
+            top_k=args.top_k,
+            log_path=log_path,
+            confidence=args.confidence,
+            confidence_threshold=args.confidence_threshold,
+            confidence_log_path=confidence_log_path,
+        )
     except RuntimeError as error:
         parser.exit(1, f"error: {error}\n")
 
@@ -186,8 +238,70 @@ def _run_pass(
     )
 
 
+def _apply_confidence(
+    result: dict[str, object],
+    *,
+    query: str,
+    generator_fn: GeneratorFn,
+    threshold: float,
+    log_path: str | Path | None,
+    confidence_estimator: ConfidenceEstimatorFn | None,
+) -> None:
+    estimator = confidence_estimator or _load_default_confidence_estimator()
+    confidence_result = estimator(
+        query=query,
+        context_chunks=result.get("retrieved_chunks", []),
+        generator_fn=generator_fn,
+        threshold=threshold,
+        log_path=log_path,
+    )
+    details = _confidence_result_to_dict(confidence_result)
+    candidate_answer = details.get("answer", result.get("answer", ""))
+    should_refuse = bool(details.get("should_refuse", False))
+    if should_refuse:
+        result["answer"] = REFUSAL_ANSWER
+        result["confidence_candidate_answer"] = candidate_answer
+    else:
+        result["answer"] = candidate_answer
+    result["confidence_score"] = details.get("confidence", 0.0)
+    result["confidence_level"] = details.get("level", "low")
+    result["low_confidence"] = should_refuse
+    if details.get("warning"):
+        result["confidence_warning"] = details["warning"]
+    result["confidence_details"] = details
+
+
+def _confidence_result_to_dict(confidence_result: object) -> dict[str, object]:
+    if isinstance(confidence_result, Mapping):
+        return dict(confidence_result)
+    to_dict = getattr(confidence_result, "to_dict", None)
+    if callable(to_dict):
+        return dict(to_dict())
+    raise TypeError(f"Unsupported confidence result type: {type(confidence_result).__name__}")
+
+
 def _normalize_retrieved_chunks(raw_results: Sequence[Any]) -> list[dict[str, object]]:
-    return [_normalize_chunk_result(raw_result) for raw_result in raw_results]
+    chunks: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_result in raw_results:
+        for raw_chunk in _iter_retrieved_chunk_payloads(raw_result):
+            chunk = _normalize_chunk_result(raw_chunk)
+            key = _chunk_dedupe_key(chunk)
+            if key in seen:
+                continue
+            seen.add(key)
+            chunks.append(chunk)
+    return chunks
+
+
+def _iter_retrieved_chunk_payloads(raw_result: Any) -> Sequence[Any]:
+    if isinstance(raw_result, Mapping) and "chunk" in raw_result:
+        payloads = [raw_result["chunk"]]
+        linked_chunks = raw_result.get("linked_chunks", [])
+        if isinstance(linked_chunks, Sequence) and not isinstance(linked_chunks, (str, bytes)):
+            payloads.extend(linked_chunks)
+        return payloads
+    return [raw_result]
 
 
 def _normalize_chunk_result(raw_result: Any) -> dict[str, object]:
@@ -213,6 +327,19 @@ def _chunk_mapping_to_dict(raw_chunk: Mapping[str, object]) -> dict[str, object]
         "source": str(_first_present(raw_chunk, "source", "text", "document", default="")),
         "language": str(_first_present(raw_chunk, "language", default="")),
     }
+
+
+def _chunk_dedupe_key(chunk: Mapping[str, object]) -> str:
+    chunk_id = str(chunk.get("id", ""))
+    if chunk_id:
+        return f"id:{chunk_id}"
+    return (
+        "loc:"
+        f"{chunk.get('filepath', '')}:"
+        f"{chunk.get('function_name', '')}:"
+        f"{chunk.get('start_line', 0)}:"
+        f"{chunk.get('end_line', 0)}"
+    )
 
 
 def _first_present(mapping: Mapping[str, object], *keys: str, default: object) -> object:
@@ -252,6 +379,12 @@ def _load_default_generator() -> GeneratorFn:
     from src.generator import generate
 
     return generate
+
+
+def _load_default_confidence_estimator() -> ConfidenceEstimatorFn:
+    from src.confidence import estimate_confidence
+
+    return estimate_confidence
 
 
 def _append_log_record(result: dict[str, object], *, query: str, top_k: int, log_path: str | Path | None) -> None:

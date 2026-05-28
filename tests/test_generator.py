@@ -67,28 +67,30 @@ def test_generate_returns_refusal_for_empty_context_without_calling_client() -> 
 
 
 def test_generate_passes_grounded_messages_to_client() -> None:
-    client = FakeClient(answer="run returns 1.")
+    client = FakeClient(answer="run returns 1. [1]")
 
     answer = generate([_chunk()], "What does run do?", temperature=0.2, client=client)
 
-    assert answer == "run returns 1."
+    assert answer == "run returns 1. [1]"
     [call] = client.chat.completions.calls
     assert call["model"] == DEFAULT_MODEL
     assert call["temperature"] == 0.2
     messages = call["messages"]
     assert messages[0]["role"] == "system"
     assert "strictly using the provided source code snippets" in messages[0]["content"]
+    assert "Every factual sentence" in messages[0]["content"]
     assert messages[1]["role"] == "user"
     assert "What does run do?" in messages[1]["content"]
     assert "src/app.py::run lines 10-12" in messages[1]["content"]
+    assert "Use snippet citations" in messages[1]["content"]
 
 
 def test_generate_accepts_dict_chunks() -> None:
-    client = FakeClient(answer="dict answer")
+    client = FakeClient(answer="dict answer [1]")
 
     answer = generate([_chunk().to_dict()], "What does run do?", client=client)
 
-    assert answer == "dict answer"
+    assert answer == "dict answer [1]"
 
 
 def test_generate_uses_refusal_for_blank_model_response() -> None:
@@ -97,6 +99,38 @@ def test_generate_uses_refusal_for_blank_model_response() -> None:
     answer = generate([_chunk()], "What does run do?", client=client)
 
     assert answer == REFUSAL_ANSWER
+
+
+def test_generate_uses_refusal_for_uncited_model_response() -> None:
+    client = FakeClient(answer="run returns 1.")
+
+    answer = generate([_chunk()], "What does run do?", client=client)
+
+    assert answer == REFUSAL_ANSWER
+
+
+def test_generate_refuses_when_answer_omits_code_identifier_from_query() -> None:
+    client = FakeClient(answer="The handler returns validation errors. [1]")
+
+    answer = generate(
+        [_chunk().to_dict() | {"function_name": "RequestValidationError"}],
+        "Where is RequestValidationError handled?",
+        client=client,
+    )
+
+    assert answer == REFUSAL_ANSWER
+
+
+def test_generate_allows_answer_that_mentions_code_identifier_from_query() -> None:
+    client = FakeClient(answer="RequestValidationError is handled here. [1]")
+
+    answer = generate(
+        [_chunk().to_dict() | {"function_name": "RequestValidationError"}],
+        "Where is RequestValidationError handled?",
+        client=client,
+    )
+
+    assert answer == "RequestValidationError is handled here. [1]"
 
 
 def test_cli_help_is_available_without_ollama() -> None:

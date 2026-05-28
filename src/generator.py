@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -19,11 +20,16 @@ REFUSAL_ANSWER = "I cannot find this in the codebase."
 SYSTEM_PROMPT = """You are a codebase assistant. Answer questions strictly using the provided source code snippets.
 If the answer is not present in the provided context, say "I cannot find this in the codebase."
 Do not invent function names, libraries, or logic not shown in the context.
+Do not give general background about the project or framework.
+Only mention files, functions, classes, and behavior that appear in the snippets.
+Every factual sentence in the answer must include at least one snippet citation like [1] or [2].
 
 When answering:
-1. First identify which file(s) and function(s) are relevant.
-2. Explain the logic step by step.
-3. Cite the specific snippet you are drawing from."""
+1. Directly answer the question in 2-6 concise bullets.
+2. Cite the specific snippet label you are drawing from in each bullet.
+3. If the snippets are only partially relevant, say exactly what can and cannot be determined."""
+_CITATION_RE = re.compile(r"\[\d+\]")
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,14 @@ def generate(
         temperature=temperature,
     )
     answer = response.choices[0].message.content
-    return answer.strip() if answer and answer.strip() else REFUSAL_ANSWER
+    if not answer or not answer.strip():
+        return REFUSAL_ANSWER
+    stripped_answer = answer.strip()
+    if not _CITATION_RE.search(stripped_answer):
+        return REFUSAL_ANSWER
+    if _missing_required_identifiers(query, stripped_answer):
+        return REFUSAL_ANSWER
+    return stripped_answer
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -117,7 +130,29 @@ def _build_user_message(context: str, query: str) -> str:
 Source snippets:
 {context}
 
-Answer strictly from the source snippets above."""
+Answer strictly from the source snippets above. Use snippet citations like [1] in every bullet."""
+
+
+def _missing_required_identifiers(query: str, answer: str) -> bool:
+    required_identifiers = _required_query_identifiers(query)
+    if not required_identifiers:
+        return False
+    answer_lower = answer.lower()
+    return any(identifier.lower() not in answer_lower for identifier in required_identifiers)
+
+
+def _required_query_identifiers(query: str) -> list[str]:
+    identifiers: list[str] = []
+    for token in _IDENTIFIER_RE.findall(query):
+        if _looks_like_code_identifier(token):
+            identifiers.append(token)
+    return identifiers
+
+
+def _looks_like_code_identifier(token: str) -> bool:
+    if "_" in token:
+        return True
+    return bool(re.search(r"[a-z][A-Z]", token))
 
 
 def _make_openai_client(*, base_url: str | None = None, api_key: str | None = None) -> Any:

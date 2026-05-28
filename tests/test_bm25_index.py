@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+import sys
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,43 @@ class TestPersistence:
         assert len(loaded) == 2
         assert {c.function_name for c in loaded.chunks} == {"alpha", "beta"}
         assert loaded.fingerprint == idx.fingerprint
+
+    def test_save_uses_portable_payload(self, tmp_path: Path):
+        idx = BM25Index.build([_make_chunk("alpha"), _make_chunk("beta")])
+        dest = tmp_path / "bm25.pkl"
+
+        idx.save(dest)
+        payload = pickle.loads(dest.read_bytes())
+
+        assert payload["type"] == "src.bm25_index.BM25Index"
+        assert payload["version"] == 1
+        assert payload["fingerprint"] == idx.fingerprint
+
+    def test_load_accepts_legacy_main_module_pickle(self, tmp_path: Path):
+        chunks = [_make_chunk("alpha"), _make_chunk("beta")]
+        idx = BM25Index.build(chunks)
+        dest = tmp_path / "legacy.pkl"
+        main_module = sys.modules["__main__"]
+        original_module = BM25Index.__module__
+        had_main_attr = hasattr(main_module, "BM25Index")
+        original_main_attr = getattr(main_module, "BM25Index", None)
+
+        try:
+            BM25Index.__module__ = "__main__"
+            main_module.BM25Index = BM25Index
+            dest.write_bytes(pickle.dumps(idx, protocol=pickle.HIGHEST_PROTOCOL))
+        finally:
+            BM25Index.__module__ = original_module
+            if had_main_attr:
+                main_module.BM25Index = original_main_attr
+            else:
+                delattr(main_module, "BM25Index")
+
+        loaded = BM25Index.load(dest)
+
+        assert isinstance(loaded, BM25Index)
+        assert loaded.fingerprint == idx.fingerprint
+        assert [chunk.function_name for chunk in loaded.chunks] == ["alpha", "beta"]
 
     def test_load_rejects_non_index_pickle(self, tmp_path: Path):
         dest = tmp_path / "not_bm25.pkl"

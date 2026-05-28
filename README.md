@@ -90,7 +90,7 @@ python3 -m src.ingest --repo tests/fixtures/sample_python_project --json
 
 ## Semantic Chunker
 
-T1 implements a Python-first semantic chunker. It extracts functions, async functions, classes, and methods from `.py` files, preserving source text, docstrings, file paths, and line ranges for downstream retrieval and citation.
+T1 implements a Python-first semantic chunker with README support. It extracts functions, async functions, classes, methods, top-level module imports/constants as `__module__`, and README text chunks, preserving source text, docstrings, file paths, and line ranges for downstream retrieval and citation.
 
 Run it on a repository or directory:
 
@@ -119,7 +119,15 @@ Each chunk includes:
 
 T4 implements GraphCodeBERT dense retrieval with ChromaDB persistence. It embeds semantic chunks with `microsoft/graphcodebert-base`, caches vectors in `data/chunks/embeddings.pkl`, and stores a queryable Chroma index in `index/chroma_db/`.
 
-Build a dense index for a local repository:
+For normal use, build both dense and BM25 indexes from one shared chunk corpus:
+
+```bash
+python -m src.build_index --repo tests/fixtures/sample_python_project
+```
+
+The combined builder writes `index/manifest.json` with the repository path, chunk count, shared chunk fingerprint, dense model, Chroma collection, and BM25 path. This is the preferred indexing path because hybrid retrieval assumes dense and sparse indexes were built from the same chunks.
+
+Build only a dense index for focused debugging:
 
 ```bash
 python -m src.index_dense --repo tests/fixtures/sample_python_project
@@ -140,6 +148,15 @@ python -m src.index_dense \
   --exclude-tests \
   --query "where is request validation handled?" \
   --top-k 5
+```
+
+The same filtering flags are available on the combined builder:
+
+```bash
+python -m src.build_index \
+  --repo data/raw/fastapi \
+  --include-path-prefix fastapi \
+  --exclude-tests
 ```
 
 Oversized functions and classes are split into overlapping linked subchunks by default during dense indexing. When a subchunk matches, `--linked-window` includes neighboring parts from the same symbol in the query output:
@@ -196,6 +213,30 @@ Use it from code:
 from src.generator import generate
 
 answer = generate(context_chunks=[chunk], query="What does this function do?")
+```
+
+## HonestCoder Confidence
+
+T10 adds an opt-in confidence layer on top of the final retrieved context. It samples three answers at temperatures `0.0`, `0.5`, and `0.9`, combines lexical agreement with MiniLM semantic similarity, and logs the confidence decision to `results/confidence_log.jsonl`.
+
+Run the pipeline with confidence enabled:
+
+```bash
+python -m src.pipeline \
+  --query "What fields are stored on Chunk?" \
+  --mode iterative \
+  --confidence \
+  --json
+```
+
+Tune the low-confidence cutoff or disable confidence logging:
+
+```bash
+python -m src.pipeline \
+  --query "What fields are stored on Chunk?" \
+  --confidence \
+  --confidence-threshold 0.75 \
+  --confidence-log-path none
 ```
 
 ## Evaluation Harness

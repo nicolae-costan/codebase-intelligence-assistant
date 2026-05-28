@@ -3,6 +3,7 @@ chromadb>=0.5,<1.0
 gitpython>=3.1,<4.0
 openai>=1.0,<2.0
 rank-bm25>=0.2.2
+sentence-transformers>=2.7,<4.0
 torch>=2.2,<3.0
 tree-sitter>=0.20.1,<0.21
 tree-sitter-languages>=1.10.2,<2.0

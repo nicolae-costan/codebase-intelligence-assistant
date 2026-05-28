@@ -47,6 +47,7 @@ class PipelineOutput:
 
     answer: str
     retrieved_contexts: list[GroundTruthContext]
+    retrieved_sources: list[str]
     raw_output: Any
 
 
@@ -184,7 +185,7 @@ def _run_ragas_if_available(items: Sequence[EvalItem], outputs: Sequence[Pipelin
         {
             "question": [item.question for item in items],
             "answer": [output.answer for output in outputs],
-            "contexts": [[_format_context(context) for context in output.retrieved_contexts] for output in outputs],
+            "contexts": [_ragas_contexts(output) for output in outputs],
             "ground_truth": [item.ground_truth_answer for item in items],
         }
     )
@@ -203,7 +204,7 @@ def _run_ragas_if_available(items: Sequence[EvalItem], outputs: Sequence[Pipelin
 
 def _normalize_pipeline_output(output: Any) -> PipelineOutput:
     if isinstance(output, str):
-        return PipelineOutput(answer=output, retrieved_contexts=[], raw_output=output)
+        return PipelineOutput(answer=output, retrieved_contexts=[], retrieved_sources=[], raw_output=output)
 
     if isinstance(output, dict):
         answer = str(output.get("answer", output.get("response", "")))
@@ -214,11 +215,21 @@ def _normalize_pipeline_output(output: Any) -> PipelineOutput:
             or output.get("citations")
             or []
         )
-        return PipelineOutput(answer=answer, retrieved_contexts=_normalize_contexts(raw_contexts), raw_output=output)
+        return PipelineOutput(
+            answer=answer,
+            retrieved_contexts=_normalize_contexts(raw_contexts),
+            retrieved_sources=_normalize_context_sources(raw_contexts),
+            raw_output=output,
+        )
 
     answer = str(getattr(output, "answer", output))
     raw_contexts = getattr(output, "retrieved_chunks", getattr(output, "contexts", []))
-    return PipelineOutput(answer=answer, retrieved_contexts=_normalize_contexts(raw_contexts), raw_output=output)
+    return PipelineOutput(
+        answer=answer,
+        retrieved_contexts=_normalize_contexts(raw_contexts),
+        retrieved_sources=_normalize_context_sources(raw_contexts),
+        raw_output=output,
+    )
 
 
 def _normalize_contexts(raw_contexts: Any) -> list[GroundTruthContext]:
@@ -249,6 +260,28 @@ def _normalize_context(raw_context: Any) -> GroundTruthContext | None:
     if not filepath:
         return None
     return GroundTruthContext(filepath=str(filepath), function_name=str(function_name) if function_name else None)
+
+
+def _normalize_context_sources(raw_contexts: Any) -> list[str]:
+    if isinstance(raw_contexts, (str, bytes)) or raw_contexts is None:
+        return []
+
+    sources: list[str] = []
+    for raw_context in raw_contexts:
+        source = _context_source(raw_context)
+        if source:
+            sources.append(source)
+    return sources
+
+
+def _context_source(raw_context: Any) -> str:
+    if isinstance(raw_context, dict):
+        if "chunk" in raw_context and isinstance(raw_context["chunk"], dict):
+            raw_context = raw_context["chunk"]
+        source = raw_context.get("source") or raw_context.get("text") or raw_context.get("document")
+    else:
+        source = getattr(raw_context, "source", getattr(raw_context, "text", ""))
+    return str(source) if source else ""
 
 
 def _parse_contexts(raw_contexts: Any, index: int) -> list[GroundTruthContext]:
@@ -305,6 +338,12 @@ def _format_context(context: GroundTruthContext) -> str:
     if context.function_name:
         return f"{context.filepath}:{context.function_name}"
     return context.filepath
+
+
+def _ragas_contexts(output: PipelineOutput) -> list[str]:
+    if output.retrieved_sources:
+        return output.retrieved_sources
+    return [_format_context(context) for context in output.retrieved_contexts]
 
 
 def _without_records(metrics: dict[str, Any]) -> dict[str, Any]:

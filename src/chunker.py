@@ -12,6 +12,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -34,6 +35,14 @@ IGNORED_DIRS = {
 }
 
 PYTHON_LANGUAGE = "python"
+README_SUFFIXES = {"", ".md", ".rst", ".txt"}
+README_LANGUAGES = {
+    "": "text",
+    ".md": "markdown",
+    ".rst": "rst",
+    ".txt": "text",
+}
+MODULE_CHUNK_NAME = "__module__"
 DEFINITION_TYPES = {
     "class_definition",
     "function_definition",
@@ -67,7 +76,7 @@ def chunk_repository(
     max_chunk_lines: int | None = None,
     chunk_overlap_lines: int = DEFAULT_CHUNK_OVERLAP_LINES,
 ) -> list[Chunk]:
-    """Extract semantic Python chunks from all supported files under `repo`.
+    """Extract semantic code and README chunks from supported files under `repo`.
 
     Args:
         repo: Repository or directory path to scan recursively.
@@ -90,6 +99,15 @@ def chunk_repository(
                 chunk_overlap_lines=chunk_overlap_lines,
             )
         )
+    for path in iter_readme_files(repo_path):
+        chunks.extend(
+            chunk_readme_file(
+                path,
+                repo_root=repo_path,
+                max_chunk_lines=max_chunk_lines,
+                chunk_overlap_lines=chunk_overlap_lines,
+            )
+        )
     return sorted(chunks, key=lambda chunk: (chunk.filepath, chunk.start_line, chunk.end_line, chunk.function_name))
 
 
@@ -101,6 +119,17 @@ def iter_python_files(root: str | Path) -> Iterable[Path]:
         if any(part in IGNORED_DIRS for part in path.parts):
             continue
         if path.is_file():
+            yield path
+
+
+def iter_readme_files(root: str | Path) -> Iterable[Path]:
+    """Yield README files under `root`, skipping generated and cache folders."""
+
+    root_path = Path(root)
+    for path in sorted(root_path.rglob("README*")):
+        if any(part in IGNORED_DIRS for part in path.parts):
+            continue
+        if path.is_file() and _is_readme(path):
             yield path
 
 
@@ -131,6 +160,26 @@ def chunk_file(
     lines = source.splitlines()
 
     chunks: list[Chunk] = []
+    for symbol in _extract_module_level_ranges(source):
+        source_text = "\n".join(lines[symbol.start_line - 1 : symbol.end_line])
+        chunk = Chunk(
+            id=make_chunk_id(relative_path, symbol.name, symbol.start_line, symbol.end_line),
+            filepath=relative_path,
+            function_name=symbol.name,
+            start_line=symbol.start_line,
+            end_line=symbol.end_line,
+            docstring="",
+            source=source_text,
+            language=PYTHON_LANGUAGE,
+        )
+        chunks.extend(
+            split_oversized_chunk(
+                chunk,
+                max_chunk_lines=max_chunk_lines,
+                chunk_overlap_lines=chunk_overlap_lines,
+            )
+        )
+
     for symbol in _extract_symbol_ranges(source):
         source_text = "\n".join(lines[symbol.start_line - 1 : symbol.end_line])
         docstring = docstrings.by_qual_and_line.get((symbol.name, symbol.start_line), docstrings.by_qual.get(symbol.name, ""))
@@ -143,6 +192,43 @@ def chunk_file(
             docstring=docstring,
             source=source_text,
             language=PYTHON_LANGUAGE,
+        )
+        chunks.extend(
+            split_oversized_chunk(
+                chunk,
+                max_chunk_lines=max_chunk_lines,
+                chunk_overlap_lines=chunk_overlap_lines,
+            )
+        )
+    return chunks
+
+
+def chunk_readme_file(
+    path: str | Path,
+    repo_root: str | Path | None = None,
+    *,
+    max_chunk_lines: int | None = None,
+    chunk_overlap_lines: int = DEFAULT_CHUNK_OVERLAP_LINES,
+) -> list[Chunk]:
+    """Extract paragraph/section chunks from a README-like text file."""
+
+    file_path = Path(path).resolve()
+    source = file_path.read_text(encoding="utf-8")
+    relative_path = _relative_path(file_path, repo_root)
+    language = README_LANGUAGES.get(file_path.suffix.lower(), "text")
+    chunks: list[Chunk] = []
+    for index, window in enumerate(_readme_windows(source), start=1):
+        start_line, end_line, title, text = window
+        function_name = f"README:{_slugify(title) or f'part-{index}'}"
+        chunk = Chunk(
+            id=make_chunk_id(relative_path, function_name, start_line, end_line),
+            filepath=relative_path,
+            function_name=function_name,
+            start_line=start_line,
+            end_line=end_line,
+            docstring=title,
+            source=text,
+            language=language,
         )
         chunks.extend(
             split_oversized_chunk(
@@ -397,6 +483,113 @@ def _extract_symbol_ranges_with_ast(source: str) -> list[_SymbolRange]:
 
     Visitor().visit(tree)
     return symbols
+
+
+def _extract_module_level_ranges(source: str) -> list[_SymbolRange]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    ranges: list[tuple[int, int]] = []
+    type_alias_node = getattr(ast, "TypeAlias", ())
+    node_types = (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.AugAssign)
+    if type_alias_node:
+        node_types = (*node_types, type_alias_node)
+
+    for node in tree.body:
+        if isinstance(node, node_types) and getattr(node, "end_lineno", None) is not None:
+            ranges.append((node.lineno, node.end_lineno))
+
+    if not ranges:
+        return []
+
+    lines = source.splitlines()
+    merged: list[tuple[int, int]] = []
+    for start_line, end_line in sorted(ranges):
+        if not merged or not _only_blank_or_comment_lines(lines, merged[-1][1] + 1, start_line - 1):
+            merged.append((start_line, end_line))
+        else:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end_line))
+
+    symbols: list[_SymbolRange] = []
+    for index, (start_line, end_line) in enumerate(merged, start=1):
+        name = MODULE_CHUNK_NAME if index == 1 else f"{MODULE_CHUNK_NAME}:{index}"
+        symbols.append(_SymbolRange(name=name, start_line=start_line, end_line=end_line))
+    return symbols
+
+
+def _only_blank_or_comment_lines(lines: Sequence[str], start_line: int, end_line: int) -> bool:
+    for line in lines[start_line - 1 : end_line]:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return False
+    return True
+
+
+def _readme_windows(source: str) -> list[tuple[int, int, str, str]]:
+    lines = source.splitlines()
+    windows: list[tuple[int, int, str, str]] = []
+    current_start: int | None = None
+    current_lines: list[str] = []
+    current_title = ""
+    current_has_heading = False
+
+    def flush(end_line: int) -> None:
+        nonlocal current_start, current_lines, current_title, current_has_heading
+        if current_start is None:
+            return
+        text = "\n".join(current_lines).strip()
+        if text:
+            windows.append((current_start, end_line, current_title, text))
+        current_start = None
+        current_lines = []
+        current_title = ""
+        current_has_heading = False
+
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        heading = _readme_heading(stripped)
+        if heading:
+            flush(line_number - 1)
+            current_start = line_number
+            current_title = heading
+            current_has_heading = True
+            current_lines.append(line)
+            continue
+        if not stripped:
+            if current_has_heading and current_start is not None:
+                current_lines.append(line)
+            else:
+                flush(line_number - 1)
+            continue
+        if current_start is None:
+            current_start = line_number
+            current_title = stripped[:80]
+        current_lines.append(line)
+
+    flush(len(lines))
+    return windows
+
+
+def _readme_heading(stripped_line: str) -> str:
+    markdown_match = re.match(r"^#{1,6}\s+(.+)$", stripped_line)
+    if markdown_match:
+        return markdown_match.group(1).strip()
+    rst_match = re.match(r"^(.+)\s*$", stripped_line)
+    if rst_match and stripped_line and set(stripped_line) <= {"=", "-", "~", "^", '"'}:
+        return ""
+    return ""
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug[:60]
+
+
+def _is_readme(path: Path) -> bool:
+    return path.stem.lower() == "readme" and path.suffix.lower() in README_SUFFIXES
 
 
 def _split_line_windows(line_count: int, *, max_chunk_lines: int, chunk_overlap_lines: int) -> list[_LineWindow]:

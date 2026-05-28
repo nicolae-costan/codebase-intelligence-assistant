@@ -109,6 +109,32 @@ def test_generate_uses_refusal_for_uncited_model_response() -> None:
     assert answer == REFUSAL_ANSWER
 
 
+def test_generate_refuses_for_out_of_range_citation() -> None:
+    client = FakeClient(answer="run returns 1. [999]")
+
+    answer = generate([_chunk()], "What does run do?", client=client)
+
+    assert answer == REFUSAL_ANSWER
+
+
+def test_generate_refuses_for_zero_citation() -> None:
+    client = FakeClient(answer="run returns 1. [0]")
+
+    answer = generate([_chunk()], "What does run do?", client=client)
+
+    assert answer == REFUSAL_ANSWER
+
+
+def test_format_context_chunks_can_limit_chunk_source() -> None:
+    chunk = _chunk()
+    chunk = Chunk(**(chunk.to_dict() | {"source": "x" * 100}))
+
+    text = format_context_chunks([chunk], max_chunk_chars=20, max_context_chars=None)
+
+    assert "...[truncated]" in text
+    assert "x" * 100 not in text
+
+
 def test_generate_refuses_when_answer_omits_code_identifier_from_query() -> None:
     client = FakeClient(answer="The handler returns validation errors. [1]")
 

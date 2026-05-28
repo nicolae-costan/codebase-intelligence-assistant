@@ -47,6 +47,42 @@ def test_extracts_methods_with_qualified_names() -> None:
     assert chunks["Greeter.greet_async"].docstring == "Build an asynchronous greeting."
 
 
+def test_extracts_module_level_constants(tmp_path: Path) -> None:
+    source = """import os
+from pathlib import Path
+
+SUPPORTED_EXTENSIONS = {".py", ".js"}
+DEFAULT_ROOT = Path("data")
+
+def run() -> str:
+    return os.name
+"""
+    _write(tmp_path / "settings.py", source)
+
+    chunks = {chunk.function_name: chunk for chunk in chunk_repository(tmp_path)}
+
+    module_chunk = chunks["__module__"]
+    assert module_chunk.filepath == "settings.py"
+    assert module_chunk.language == "python"
+    assert "SUPPORTED_EXTENSIONS" in module_chunk.source
+    assert "def run" not in module_chunk.source
+
+
+def test_extracts_readme_chunks(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "README.md",
+        "# Project Title\n\nThis project answers code questions.\n\n## Usage\n\nRun the local pipeline.\n",
+    )
+
+    chunks = chunk_repository(tmp_path)
+
+    assert [chunk.function_name for chunk in chunks] == ["README:project-title", "README:usage"]
+    assert all(chunk.filepath == "README.md" for chunk in chunks)
+    assert all(chunk.language == "markdown" for chunk in chunks)
+    assert "This project answers code questions." in chunks[0].source
+    assert "Run the local pipeline." in chunks[1].source
+
+
 def test_chunk_ids_are_stable() -> None:
     first = chunk_repository(FIXTURE_REPO)
     second = chunk_repository(FIXTURE_REPO)
@@ -109,3 +145,8 @@ def _chunks_by_name():
 
 def chunks_id(chunks, name: str) -> str:
     return next(chunk.id for chunk in chunks if chunk.function_name == name)
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")

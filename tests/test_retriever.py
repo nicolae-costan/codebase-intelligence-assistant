@@ -35,6 +35,19 @@ def test_rrf_merge():
     assert abs(fused[2]["score"] - (1/62)) < 1e-5
 
 
+def test_rrf_merge_preserves_linked_dense_chunks():
+    chunk_a = Chunk(id="a", filepath="file.py", function_name="func_a", start_line=1, end_line=10, docstring="", source="", language="python")
+    linked = Chunk(id="a-neighbor", filepath="file.py", function_name="func_a", start_line=11, end_line=20, docstring="", source="", language="python")
+
+    fused = rrf_merge(
+        [{"chunk": chunk_a.to_dict(), "score": 0.9, "linked_chunks": [linked.to_dict()]}],
+        [],
+    )
+
+    assert fused[0]["chunk"]["id"] == "a"
+    assert fused[0]["linked_chunks"] == [linked.to_dict()]
+
+
 def test_hybrid_search_fetches_dense_and_bm25_then_fuses(monkeypatch):
     chunk_a = Chunk(id="a", filepath="file.py", function_name="func_a", start_line=1, end_line=10, docstring="", source="", language="python")
     chunk_b = Chunk(id="b", filepath="file.py", function_name="func_b", start_line=11, end_line=20, docstring="", source="", language="python")
@@ -42,8 +55,8 @@ def test_hybrid_search_fetches_dense_and_bm25_then_fuses(monkeypatch):
 
     dense_calls = []
 
-    def fake_query_dense(query, k):
-        dense_calls.append((query, k))
+    def fake_query_dense(query, k, linked_window=0):
+        dense_calls.append((query, k, linked_window))
         return [
             {"chunk": chunk_a.to_dict(), "score": 0.9, "rank": 1, "retriever": "dense"},
             {"chunk": chunk_b.to_dict(), "score": 0.8, "rank": 2, "retriever": "dense"},
@@ -60,9 +73,9 @@ def test_hybrid_search_fetches_dense_and_bm25_then_fuses(monkeypatch):
     bm25_index = FakeBM25Index()
     monkeypatch.setattr(retriever, "query_dense", fake_query_dense)
 
-    results = hybrid_search("request validation", top_k=2, bm25_index=bm25_index, dense_k_multiplier=3)
+    results = hybrid_search("request validation", top_k=2, bm25_index=bm25_index, dense_k_multiplier=3, linked_window=2)
 
-    assert dense_calls == [("request validation", 6)]
+    assert dense_calls == [("request validation", 6, 2)]
     assert bm25_index.calls == [("request validation", 6)]
     assert [result["chunk"]["id"] for result in results] == ["b", "a"]
 

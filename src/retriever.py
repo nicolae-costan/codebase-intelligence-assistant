@@ -27,6 +27,7 @@ def rrf_merge(
     """
     scores: dict[str, float] = {}
     chunk_map: dict[str, dict[str, object]] = {}
+    linked_map: dict[str, list[dict[str, object]]] = {}
 
     # Process dense results
     for rank, dense_result in enumerate(dense_results):
@@ -40,6 +41,9 @@ def rrf_merge(
             
         scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
         chunk_map[chunk_id] = chunk_dict
+        linked_chunks = dense_result.get("linked_chunks", [])
+        if isinstance(linked_chunks, list):
+            linked_map[chunk_id] = [chunk for chunk in linked_chunks if isinstance(chunk, dict)]
 
     # Process BM25 results
     for rank, chunk in enumerate(bm25_results):
@@ -54,10 +58,13 @@ def rrf_merge(
     # Sort by RRF score descending
     ranked_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     
-    return [
-        {"chunk": chunk_map[chunk_id], "score": score}
-        for chunk_id, score in ranked_items
-    ]
+    fused: list[dict[str, object]] = []
+    for chunk_id, score in ranked_items:
+        result: dict[str, object] = {"chunk": chunk_map[chunk_id], "score": score}
+        if linked_map.get(chunk_id):
+            result["linked_chunks"] = linked_map[chunk_id]
+        fused.append(result)
+    return fused
 
 def hybrid_search(
     query: str,
@@ -65,6 +72,7 @@ def hybrid_search(
     *,
     bm25_index: BM25Index | None = None,
     dense_k_multiplier: int = 2,
+    linked_window: int = 1,
 ) -> list[dict[str, object]]:
     """Perform hybrid search over both dense and sparse indexes.
 
@@ -76,6 +84,7 @@ def hybrid_search(
         bm25_index: Loaded BM25 index. If None, it will be loaded from disk.
         dense_k_multiplier: How many more candidates to fetch initially before fusing.
                             A higher number gives RRF more candidates to work with.
+        linked_window: Neighboring dense subchunks from the same symbol to attach.
 
     Returns:
         List of fused results.
@@ -86,7 +95,7 @@ def hybrid_search(
     fetch_k = top_k * dense_k_multiplier
 
     # 1. Fetch from dense index
-    dense_results = query_dense(query, k=fetch_k)
+    dense_results = query_dense(query, k=fetch_k, linked_window=linked_window)
 
     # 2. Fetch from sparse index
     bm25_results = bm25_index.query_bm25(query, k=fetch_k)

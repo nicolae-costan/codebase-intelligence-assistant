@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_INDEX_PATH = Path("index/bm25/bm25.pkl")
+_PERSISTENCE_TYPE = "src.bm25_index.BM25Index"
+_PERSISTENCE_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # Tokenization
@@ -193,7 +195,7 @@ class BM25Index:
         dest = Path(path).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         with dest.open("wb") as fh:
-            pickle.dump(self, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(_index_payload(self), fh, protocol=pickle.HIGHEST_PROTOCOL)
         logger.info("BM25 index saved to %s.", dest)
         return dest
 
@@ -214,11 +216,8 @@ class BM25Index:
         if not src_path.exists():
             raise FileNotFoundError(f"BM25 index file not found: {src_path}")
         with src_path.open("rb") as fh:
-            index = pickle.load(fh)
-        if not isinstance(index, cls):
-            raise TypeError(f"Pickle at {src_path} did not contain a BM25Index.")
-        if not hasattr(index, "_fingerprint"):
-            index._fingerprint = fingerprint_chunks(index._chunks)
+            payload = _BM25Unpickler(fh).load()
+        index = _index_from_payload(payload, src_path)
         logger.info("BM25 index loaded from %s (%d chunks).", src_path, len(index._chunks))
         return index
 
@@ -246,6 +245,49 @@ class BM25Index:
 
     def __repr__(self) -> str:
         return f"BM25Index(chunks={len(self._chunks)})"
+
+
+class _BM25Unpickler(pickle.Unpickler):
+    """Load current payloads and legacy ``python -m`` BM25Index pickles."""
+
+    def find_class(self, module: str, name: str) -> object:
+        if name == "BM25Index" and module in {"__main__", "src.pipeline"}:
+            return BM25Index
+        return super().find_class(module, name)
+
+
+def _index_payload(index: BM25Index) -> dict[str, object]:
+    return {
+        "type": _PERSISTENCE_TYPE,
+        "version": _PERSISTENCE_VERSION,
+        "chunks": index._chunks,
+        "bm25": index._bm25,
+        "fingerprint": index._fingerprint,
+    }
+
+
+def _index_from_payload(payload: object, src_path: Path) -> BM25Index:
+    if isinstance(payload, BM25Index):
+        index = payload
+        if not hasattr(index, "_fingerprint"):
+            index._fingerprint = fingerprint_chunks(index._chunks)
+        return index
+
+    if isinstance(payload, dict) and payload.get("type") == _PERSISTENCE_TYPE:
+        if payload.get("version") != _PERSISTENCE_VERSION:
+            raise TypeError(f"Unsupported BM25 index version in pickle at {src_path}.")
+        chunks = payload.get("chunks")
+        bm25 = payload.get("bm25")
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(chunks, list) or bm25 is None:
+            raise TypeError(f"Pickle at {src_path} did not contain a valid BM25Index payload.")
+        return BM25Index(
+            chunks=chunks,
+            _bm25=bm25,
+            fingerprint=str(fingerprint) if fingerprint else fingerprint_chunks(chunks),
+        )
+
+    raise TypeError(f"Pickle at {src_path} did not contain a BM25Index.")
 
 
 # ---------------------------------------------------------------------------

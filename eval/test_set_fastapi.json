@@ -1,0 +1,237 @@
+[
+  {
+    "id": "fastapi-swagger-ui-parameters",
+    "question": "How does FastAPI apply custom Swagger UI parameters when generating the docs HTML?",
+    "ground_truth_answer": "get_swagger_ui_html copies swagger_ui_default_parameters, updates the copy with swagger_ui_parameters when provided, and writes each encoded key/value into the SwaggerUIBundle JavaScript configuration.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/docs.py",
+        "function_name": "get_swagger_ui_html"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-html-safe-json",
+    "question": "How does FastAPI make JSON safe to embed inside generated HTML script tags?",
+    "ground_truth_answer": "_html_safe_json serializes the value with json.dumps and escapes <, >, and & as unicode escape sequences before embedding it in HTML.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/docs.py",
+        "function_name": "_html_safe_json"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-redoc-html",
+    "question": "What does get_redoc_html generate for the ReDoc documentation page?",
+    "ground_truth_answer": "get_redoc_html returns an HTMLResponse containing a page with the title, favicon, optional Google Fonts link, a redoc element pointing at the OpenAPI URL, and a script tag loading the ReDoc JavaScript bundle.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/docs.py",
+        "function_name": "get_redoc_html"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-openapi-cache",
+    "question": "How does FastAPI cache the generated OpenAPI schema?",
+    "ground_truth_answer": "FastAPI.openapi checks self.openapi_schema first. If it is empty, it calls get_openapi with the application metadata, routes, webhooks, tags, servers, and schema options, stores the result on self.openapi_schema, and returns it.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/applications.py",
+        "function_name": "FastAPI.openapi"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-setup-doc-routes",
+    "question": "How does FastAPI.setup register the OpenAPI, Swagger UI, OAuth redirect, and ReDoc routes?",
+    "ground_truth_answer": "FastAPI.setup conditionally adds the OpenAPI JSON route, the Swagger UI docs route, the Swagger OAuth2 redirect route, and the ReDoc route when the corresponding URLs are configured. The handlers account for root_path before calling the docs helpers.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/applications.py",
+        "function_name": "FastAPI.setup"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-middleware-stack",
+    "question": "What FastAPI-specific middleware is added in build_middleware_stack and why?",
+    "ground_truth_answer": "FastAPI.build_middleware_stack adds AsyncExitStackMiddleware inside ExceptionMiddleware and custom user middleware. The comments say it is used for closing files and preserving the relevant context for contextvars.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/applications.py",
+        "function_name": "FastAPI.build_middleware_stack"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-http-exception",
+    "question": "What data does FastAPI.HTTPException pass to Starlette's HTTPException?",
+    "ground_truth_answer": "HTTPException.__init__ accepts status_code, detail, and headers, then calls the Starlette HTTPException initializer with those same status_code, detail, and headers values.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/exceptions.py",
+        "function_name": "HTTPException.__init__"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-websocket-exception",
+    "question": "What does WebSocketException store when it is raised?",
+    "ground_truth_answer": "WebSocketException.__init__ receives a close code and an optional reason, then delegates to StarletteWebSocketException with code and reason.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/exceptions.py",
+        "function_name": "WebSocketException.__init__"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-jsonable-encoder-basemodel",
+    "question": "How does jsonable_encoder handle Pydantic BaseModel instances?",
+    "ground_truth_answer": "jsonable_encoder calls model_dump in json mode with include, exclude, by_alias, exclude_unset, exclude_none, and exclude_defaults, then recursively calls jsonable_encoder on the resulting dictionary.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/encoders.py",
+        "function_name": "jsonable_encoder"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-jsonable-encoder-sqlalchemy",
+    "question": "How does jsonable_encoder avoid leaking SQLAlchemy internal attributes from dictionaries?",
+    "ground_truth_answer": "When sqlalchemy_safe is true, jsonable_encoder skips dictionary entries whose string keys start with _sa before recursively encoding keys and values.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/encoders.py",
+        "function_name": "jsonable_encoder"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-openapi-output",
+    "question": "What top-level OpenAPI fields does get_openapi assemble?",
+    "ground_truth_answer": "get_openapi builds an info object with title and version plus optional metadata, creates an output with openapi and info, optionally adds servers, components, paths, webhooks, tags, and externalDocs, then returns the encoded OpenAPI model.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/utils.py",
+        "function_name": "get_openapi"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-openapi-path-validation-response",
+    "question": "When does get_openapi_path add the default 422 validation error response?",
+    "ground_truth_answer": "get_openapi_path adds a 422 Validation Error response when the route has flat parameters or a body field and the operation does not already define 422, 4XX, or default responses.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/utils.py",
+        "function_name": "get_openapi_path"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-openapi-security-definitions",
+    "question": "How does get_openapi_security_definitions merge OAuth scopes for repeated security schemes?",
+    "ground_truth_answer": "get_openapi_security_definitions iterates flat_dependant security dependencies, stores each scheme model by scheme_name, and accumulates unique OAuth scopes per scheme before returning security definitions and operation security entries.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/openapi/utils.py",
+        "function_name": "get_openapi_security_definitions"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-oauth2-password-bearer-call",
+    "question": "How does OAuth2PasswordBearer read and validate a bearer token from a request?",
+    "ground_truth_answer": "OAuth2PasswordBearer.__call__ reads the Authorization header, parses its scheme and parameter, requires the scheme to be bearer, raises make_not_authenticated_error when auto_error is true and the token is missing or invalid, otherwise returns None, and returns the bearer parameter when valid.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/security/oauth2.py",
+        "function_name": "OAuth2PasswordBearer.__call__"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-api-key-header",
+    "question": "How does APIKeyHeader extract an API key?",
+    "ground_truth_answer": "APIKeyHeader.__call__ reads the configured header name from request.headers and passes the value to check_api_key.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/security/api_key.py",
+        "function_name": "APIKeyHeader.__call__"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-api-key-cookie",
+    "question": "How does APIKeyCookie extract an API key?",
+    "ground_truth_answer": "APIKeyCookie.__call__ reads the configured cookie name from request.cookies and passes the value to check_api_key.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/security/api_key.py",
+        "function_name": "APIKeyCookie.__call__"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-solve-dependencies-cache",
+    "question": "How does solve_dependencies use the dependency cache?",
+    "ground_truth_answer": "solve_dependencies initializes dependency_cache when needed, recursively solves sub-dependencies, reuses cached values when use_cache is true and the cache key exists, and stores newly solved values by cache key.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/dependencies/utils.py",
+        "function_name": "solve_dependencies"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-request-handler-body-errors",
+    "question": "How does get_request_handler handle invalid JSON request bodies?",
+    "ground_truth_answer": "get_request_handler reads the request body, tries to parse JSON for application/json or +json content types, and on json.JSONDecodeError raises RequestValidationError with type json_invalid, the body location, message, input, error context, original body, and endpoint context.",
+    "ground_truth_context": [
+      {
+        "filepath": "fastapi/routing.py",
+        "function_name": "get_request_handler"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-readme-standard-dependencies",
+    "question": "Which optional standard dependencies does FastAPI list for Pydantic, Starlette, and FastAPI itself?",
+    "ground_truth_answer": "The README says fastapi[standard] includes email-validator for Pydantic, httpx, jinja2, and python-multipart for Starlette, and uvicorn plus fastapi-cli for FastAPI.",
+    "ground_truth_context": [
+      {
+        "filepath": "README.md",
+        "function_name": "README:standard-dependencies"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fastapi-out-of-scope-react-dashboard",
+    "question": "Where is the React dashboard build script configured in FastAPI?",
+    "ground_truth_answer": "I cannot find this in the codebase. The indexed FastAPI code does not include a React dashboard build script.",
+    "ground_truth_context": [],
+    "expected_refusal": true
+  }
+]

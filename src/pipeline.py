@@ -95,6 +95,13 @@ def iterative_rag(
         )
 
     result["trace"] = trace | {"total_ms": _elapsed_ms(total_start)}
+    
+    # Apply grounding check
+    from src.grounding import check_grounding
+    grounding_result = check_grounding(str(result.get("answer", "")), result.get("retrieved_chunks", []))
+    result["grounded"] = grounding_result["grounded"]
+    result["ungrounded_claims"] = grounding_result["ungrounded_claims"]
+
     _append_log_record(result, query=query, top_k=top_k, log_path=log_path)
     return result
 

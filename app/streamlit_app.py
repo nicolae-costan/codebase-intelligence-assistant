@@ -37,6 +37,10 @@ for message in st.session_state.messages:
                     for i, ans in enumerate(raw_answers):
                         st.markdown(f"**Answer Variant {i+1}:**")
                         st.info(ans)
+                        
+        if message.get("grounded") is False:
+            claims = ", ".join([f"`{c}`" for c in message.get("ungrounded_claims", [])])
+            st.warning(f"⚠️ **Grounding Warning:** The AI mentioned {claims}, but these could not be found in the retrieved code. This might be a hallucination.")
 
         # If there are retrieved chunks saved in the message history, display them in an expander
         if "chunks" in message and message["chunks"]:
@@ -93,6 +97,13 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
                                 st.markdown(f"**Answer Variant {i+1}:**")
                                 st.info(ans)
 
+                # Display grounding warning if applicable
+                is_grounded = result.get("grounded", True)
+                ungrounded_claims = result.get("ungrounded_claims", [])
+                if not is_grounded:
+                    claims = ", ".join([f"`{c}`" for c in ungrounded_claims])
+                    st.warning(f"⚠️ **Grounding Warning:** The AI mentioned {claims}, but these could not be found in the retrieved code. This might be a hallucination.")
+
                 # Display the retrieved snippets in an expander
                 if chunks:
                     with st.expander("Retrieved snippets"):
@@ -108,7 +119,9 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
                     "role": "assistant", 
                     "content": final_answer,
                     "chunks": chunks,
-                    "confidence_details": confidence_details
+                    "confidence_details": confidence_details,
+                    "grounded": is_grounded,
+                    "ungrounded_claims": ungrounded_claims
                 })
                 
             except Exception as e:

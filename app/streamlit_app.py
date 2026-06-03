@@ -66,22 +66,22 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching codebase and generating answer..."):
             try:
-                # Call the pipeline decoupled from internals
-                result = iterative_rag(prompt, mode="iterative", confidence=True)
+                # Use the ablation-backed default: hybrid retrieval, single-pass generation.
+                result = iterative_rag(prompt, mode="single", confidence=False)
                 
                 answer = result.get("answer", "No answer generated.")
                 chunks = result.get("retrieved_chunks", [])
                 
-                # Determine confidence badge based on T10 HonestCoder layer
-                confidence_level = result.get("confidence_level", "low")
-                badge = "🔴"  # Default low
+                # Only show a confidence badge when the confidence layer is enabled.
+                confidence_level = result.get("confidence_level")
+                badge = ""
                 if confidence_level == "high":
-                    badge = "🟢"
+                    badge = "🟢 "
                 elif confidence_level == "medium":
-                    badge = "🟡"
-                
-                # Format the final answer string with the badge
-                final_answer = f"{badge} {answer}"
+                    badge = "🟡 "
+                elif confidence_level == "low":
+                    badge = "🔴 "
+                final_answer = f"{badge}{answer}"
                 
                 # Display the main answer
                 st.markdown(final_answer)

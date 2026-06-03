@@ -270,6 +270,20 @@ python3 -m pip install -e ".[eval]"
 RAGAS_OLLAMA_MODEL=qwen2.5-coder:7b python3 -m eval.run_eval --oracle --ragas
 ```
 
+## Ablation Experiments
+
+T12 compares dense-only retrieval against hybrid retrieval, each in single-pass and two-pass iterative modes. It enables the HonestCoder confidence layer by default, includes adversarial out-of-scope queries, and writes slide-ready artifacts:
+
+```bash
+python3 -m eval.ablation
+```
+
+The default outputs are `results/ablation.json` and `results/ablation.csv`. Add optional RAGAS scoring when the eval dependencies and local judge model are available:
+
+```bash
+RAGAS_OLLAMA_MODEL=qwen2.5-coder:7b python3 -m eval.ablation --ragas
+```
+
 ## Notes
 
 - `data/`, `index/`, and `results/` are intentionally ignored by git.

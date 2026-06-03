@@ -1,6 +1,7 @@
 import csv
 import os
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 # Add the project root to the Python path so we can import 'src'
@@ -55,6 +56,138 @@ if selected_summary:
     st.sidebar.metric("Refusal quality", selected_summary.get("refusal_quality", "n/a"))
     st.sidebar.caption("DeepEval judge results on the FastAPI ablation.")
 
+
+def render_retrieval_journey(
+    trace: object,
+    *,
+    answer: str,
+    mode_label: str,
+    condition_label: str,
+) -> None:
+    if not isinstance(trace, Mapping) or not trace:
+        return
+
+    with st.expander("Retrieval journey"):
+        st.caption(f"{mode_label} · {condition_label}")
+        columns = st.columns(4)
+        columns[0].markdown("**Question**")
+        columns[0].caption(_first_pass_query(trace))
+        columns[1].markdown("**Hybrid retrieval**")
+        columns[1].caption("GraphCodeBERT + BM25 -> RRF")
+        columns[2].markdown("**Generation**")
+        columns[2].caption("Qwen2.5-Coder over retrieved snippets")
+        columns[3].markdown("**Citations**")
+        columns[3].caption(f"{_final_chunk_count(trace)} snippet(s)")
+
+        total_ms = trace.get("total_ms")
+        if total_ms is not None:
+            st.caption(f"Total pipeline time: {_format_ms(total_ms)}")
+
+        _render_pass_trace("Pass 1", trace.get("pass_1"))
+        _render_pass_trace("Pass 2", trace.get("pass_2"))
+
+        st.markdown("**Final answer**")
+        st.markdown(answer)
+
+
+def _render_pass_trace(label: str, pass_trace: object) -> None:
+    if not isinstance(pass_trace, Mapping) or not pass_trace:
+        return
+
+    st.markdown(f"**{label}**")
+    if pass_trace.get("skipped"):
+        st.info(f"Skipped: {pass_trace['skipped']}")
+        return
+
+    query = pass_trace.get("query")
+    if query:
+        st.markdown("Retrieval query")
+        st.code(str(query), language="text")
+
+    timing = []
+    if pass_trace.get("retrieval_ms") is not None:
+        timing.append(f"retrieval {_format_ms(pass_trace['retrieval_ms'])}")
+    if pass_trace.get("generation_ms") is not None:
+        timing.append(f"generation {_format_ms(pass_trace['generation_ms'])}")
+    if timing:
+        st.caption(" · ".join(timing))
+
+    chunks = pass_trace.get("retrieved_chunks", [])
+    if isinstance(chunks, Sequence) and not isinstance(chunks, (str, bytes)) and chunks:
+        st.markdown("Retrieved snippets")
+        for index, chunk in enumerate(chunks[:5], start=1):
+            if isinstance(chunk, Mapping):
+                st.markdown(f"{index}. {_chunk_label(chunk)}")
+        if len(chunks) > 5:
+            st.caption(f"{len(chunks) - 5} more snippet(s) available in Retrieved snippets.")
+
+
+def _first_pass_query(trace: Mapping[object, object]) -> str:
+    pass_1 = trace.get("pass_1")
+    if isinstance(pass_1, Mapping):
+        query = pass_1.get("query")
+        if query:
+            return _short_text(str(query), limit=120)
+    return "n/a"
+
+
+def _final_chunk_count(trace: Mapping[object, object]) -> int:
+    pass_2 = trace.get("pass_2")
+    pass_1 = trace.get("pass_1")
+    final_pass = pass_2 if isinstance(pass_2, Mapping) and not pass_2.get("skipped") else pass_1
+    if not isinstance(final_pass, Mapping):
+        return 0
+    chunks = final_pass.get("retrieved_chunks", [])
+    return len(chunks) if isinstance(chunks, Sequence) and not isinstance(chunks, (str, bytes)) else 0
+
+
+def _chunk_label(chunk: Mapping[object, object]) -> str:
+    filepath = chunk.get("filepath", "Unknown")
+    function_name = chunk.get("function_name")
+    start_line = chunk.get("start_line", "?")
+    end_line = chunk.get("end_line", "?")
+    location = f"`{filepath}`"
+    if function_name:
+        location += f" · `{function_name}`"
+    debug = _retrieval_debug_label(chunk.get("retrieval_debug"))
+    if debug:
+        return f"{location} · lines {start_line}-{end_line} · {debug}"
+    return f"{location} · lines {start_line}-{end_line}"
+
+
+def _retrieval_debug_label(raw_debug: object) -> str:
+    if not isinstance(raw_debug, Mapping):
+        return ""
+    parts = []
+    if raw_debug.get("dense_rank") is not None:
+        parts.append(f"dense #{raw_debug['dense_rank']}")
+    if raw_debug.get("bm25_rank") is not None:
+        parts.append(f"BM25 #{raw_debug['bm25_rank']}")
+    if raw_debug.get("rrf_score") is not None:
+        parts.append(f"RRF {_format_score(raw_debug['rrf_score'])}")
+    return ", ".join(parts)
+
+
+def _format_score(value: object) -> str:
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_ms(value: object) -> str:
+    try:
+        return f"{float(value):.1f} ms"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _short_text(value: str, *, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 3]}..."
+
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -77,6 +210,13 @@ for message in st.session_state.messages:
         if message.get("grounded") is False:
             claims = ", ".join([f"`{c}`" for c in message.get("ungrounded_claims", [])])
             st.warning(f"⚠️ **Grounding Warning:** The AI mentioned {claims}, but these could not be found in the retrieved code. This might be a hallucination.")
+
+        render_retrieval_journey(
+            message.get("trace"),
+            answer=message["content"],
+            mode_label=message.get("mode_label", ""),
+            condition_label=message.get("condition_label", ""),
+        )
 
         # If there are retrieved chunks saved in the message history, display them in an expander
         if "chunks" in message and message["chunks"]:
@@ -140,6 +280,13 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
                     claims = ", ".join([f"`{c}`" for c in ungrounded_claims])
                     st.warning(f"⚠️ **Grounding Warning:** The AI mentioned {claims}, but these could not be found in the retrieved code. This might be a hallucination.")
 
+                render_retrieval_journey(
+                    result.get("trace"),
+                    answer=final_answer,
+                    mode_label=selected_mode_label,
+                    condition_label=selected_mode["label"],
+                )
+
                 # Display the retrieved snippets in an expander
                 if chunks:
                     with st.expander("Retrieved snippets"):
@@ -157,7 +304,10 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
                     "chunks": chunks,
                     "confidence_details": confidence_details,
                     "grounded": is_grounded,
-                    "ungrounded_claims": ungrounded_claims
+                    "ungrounded_claims": ungrounded_claims,
+                    "trace": result.get("trace", {}),
+                    "mode_label": selected_mode_label,
+                    "condition_label": selected_mode["label"],
                 })
                 
             except Exception as e:

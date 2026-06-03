@@ -291,8 +291,10 @@ def _normalize_retrieved_chunks(raw_results: Sequence[Any]) -> list[dict[str, ob
     chunks: list[dict[str, object]] = []
     seen: set[str] = set()
     for raw_result in raw_results:
-        for raw_chunk in _iter_retrieved_chunk_payloads(raw_result):
+        for payload_index, raw_chunk in enumerate(_iter_retrieved_chunk_payloads(raw_result)):
             chunk = _normalize_chunk_result(raw_chunk)
+            if payload_index == 0:
+                _attach_retrieval_debug(chunk, raw_result)
             key = _chunk_dedupe_key(chunk)
             if key in seen:
                 continue
@@ -321,6 +323,14 @@ def _normalize_chunk_result(raw_result: Any) -> dict[str, object]:
         return _chunk_mapping_to_dict(raw_result)
 
     raise TypeError(f"Unsupported retriever result type: {type(raw_result).__name__}")
+
+
+def _attach_retrieval_debug(chunk: dict[str, object], raw_result: Any) -> None:
+    if not isinstance(raw_result, Mapping):
+        return
+    debug = raw_result.get("retrieval_debug")
+    if isinstance(debug, Mapping):
+        chunk["retrieval_debug"] = dict(debug)
 
 
 def _chunk_mapping_to_dict(raw_chunk: Mapping[str, object]) -> dict[str, object]:

@@ -28,6 +28,7 @@ def rrf_merge(
     scores: dict[str, float] = {}
     chunk_map: dict[str, dict[str, object]] = {}
     linked_map: dict[str, list[dict[str, object]]] = {}
+    debug_map: dict[str, dict[str, object]] = {}
 
     # Process dense results
     for rank, dense_result in enumerate(dense_results):
@@ -41,6 +42,8 @@ def rrf_merge(
             
         scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
         chunk_map[chunk_id] = chunk_dict
+        debug_map.setdefault(chunk_id, {})["dense_rank"] = rank + 1
+        debug_map[chunk_id]["dense_score"] = dense_result.get("score")
         linked_chunks = dense_result.get("linked_chunks", [])
         if isinstance(linked_chunks, list):
             linked_map[chunk_id] = [chunk for chunk in linked_chunks if isinstance(chunk, dict)]
@@ -52,6 +55,7 @@ def rrf_merge(
             continue
             
         scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+        debug_map.setdefault(chunk_id, {})["bm25_rank"] = rank + 1
         if chunk_id not in chunk_map:
             chunk_map[chunk_id] = chunk.to_dict()
 
@@ -60,7 +64,14 @@ def rrf_merge(
     
     fused: list[dict[str, object]] = []
     for chunk_id, score in ranked_items:
-        result: dict[str, object] = {"chunk": chunk_map[chunk_id], "score": score}
+        result: dict[str, object] = {
+            "chunk": chunk_map[chunk_id],
+            "score": score,
+            "retrieval_debug": {
+                **debug_map.get(chunk_id, {}),
+                "rrf_score": score,
+            },
+        }
         if linked_map.get(chunk_id):
             result["linked_chunks"] = linked_map[chunk_id]
         fused.append(result)

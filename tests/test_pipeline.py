@@ -139,6 +139,30 @@ def test_pipeline_expands_linked_chunks_with_deduplication() -> None:
     assert result["retrieved_chunks"] == [_chunk_dict("primary"), _chunk_dict("neighbor")]
 
 
+def test_pipeline_preserves_retrieval_debug_for_primary_chunks() -> None:
+    retriever = FakeRetriever(
+        [
+            [
+                {
+                    "chunk": _chunk_dict("primary"),
+                    "linked_chunks": [_chunk_dict("neighbor")],
+                    "retrieval_debug": {"dense_rank": 1, "bm25_rank": 3, "rrf_score": 0.031},
+                }
+            ]
+        ]
+    )
+    generator = FakeGenerator(["answer"])
+
+    result = iterative_rag("How does the big symbol work?", retriever=retriever, generator_fn=generator, log_path=None)
+
+    assert result["retrieved_chunks"][0]["retrieval_debug"] == {
+        "dense_rank": 1,
+        "bm25_rank": 3,
+        "rrf_score": 0.031,
+    }
+    assert "retrieval_debug" not in result["retrieved_chunks"][1]
+
+
 def test_iterative_mode_skips_second_pass_when_first_pass_refuses() -> None:
     retriever = FakeRetriever([[_chunk("first")]])
     generator = FakeGenerator([REFUSAL_ANSWER])

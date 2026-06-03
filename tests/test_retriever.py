@@ -33,6 +33,9 @@ def test_rrf_merge():
     assert abs(fused[0]["score"] - (1/62 + 1/61)) < 1e-5
     assert abs(fused[1]["score"] - (1/61)) < 1e-5
     assert abs(fused[2]["score"] - (1/62)) < 1e-5
+    assert fused[0]["retrieval_debug"]["dense_rank"] == 2
+    assert fused[0]["retrieval_debug"]["bm25_rank"] == 1
+    assert fused[0]["retrieval_debug"]["rrf_score"] == fused[0]["score"]
 
 
 def test_rrf_merge_preserves_linked_dense_chunks():

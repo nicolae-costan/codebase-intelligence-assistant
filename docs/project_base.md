@@ -562,6 +562,7 @@ The UI is a Streamlit chat application. It:
 - shows the answer;
 - stores chat history in `st.session_state`;
 - displays retrieved snippets in an expander;
+- displays a retrieval journey expander with pass queries, timing, ranked snippets, and the final answer;
 - shows line numbers, file paths, and function/class names;
 - shows grounding warnings when the grounding layer flags ungrounded claims;
 - can show confidence details if the confidence layer is enabled.
@@ -888,7 +889,7 @@ The best product choice is single-pass hybrid by default, with iterative exposed
 Latest full test run:
 
 ```text
-112 passed, 1 warning
+113 passed, 1 warning
 ```
 
 Warning:
@@ -1087,7 +1088,6 @@ The generator requires a running Ollama-compatible endpoint and the `qwen2.5-cod
 - Add source filters by path prefix.
 - Add a retrieved snippet score/rank display.
 - Add copyable citations.
-- Add a "show retrieval trace" expander for debugging.
 - Add an index manifest panel so users know which repository is active.
 
 ## 25. Recommended Demo Script
@@ -1163,13 +1163,13 @@ The project currently has:
 - single-pass and iterative RAG modes;
 - grounding checks;
 - optional confidence estimation;
-- Streamlit chat UI with Fast answer and Deep search modes;
+- Streamlit chat UI with Fast answer, Deep search, and retrieval journey views;
 - manual eval harness;
 - FastAPI eval set;
 - four-condition ablation runner;
 - DeepEval GEval LLM-judge evaluator;
 - latest no-confidence FastAPI retrieval results;
 - latest DeepEval FastAPI answer-quality results;
-- 112 passing tests.
+- 113 passing tests.
 
 The most important next technical step is to improve answer quality while preserving the strong retrieval gains from hybrid search. The most practical next product step is to add better citation grading and retrieval ranking visibility in the UI.

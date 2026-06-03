@@ -1,0 +1,233 @@
+[
+  {
+    "id": "schema-chunk-fields",
+    "question": "What fields are stored on a semantic Chunk record?",
+    "ground_truth_answer": "The Chunk dataclass stores id, filepath, function_name, start_line, end_line, docstring, source, and language.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/schema.py",
+        "function_name": "Chunk"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "schema-chunk-serialization",
+    "question": "How does a Chunk get converted into a JSON-serializable object?",
+    "ground_truth_answer": "Chunk.to_dict returns dataclasses.asdict(self), which produces a JSON-serializable dictionary for the chunk fields.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/schema.py",
+        "function_name": "Chunk.to_dict"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "chunker-repository-entrypoint",
+    "question": "Which function extracts semantic Python chunks from all supported files under a repository?",
+    "ground_truth_answer": "chunk_repository resolves the repository path, iterates Python files, chunks each file, and returns chunks sorted by path and source location.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/chunker.py",
+        "function_name": "chunk_repository"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "chunker-file-filter",
+    "question": "How does the chunker avoid Python files in generated or cache directories?",
+    "ground_truth_answer": "iter_python_files walks *.py files and skips any path whose parts include entries from IGNORED_DIRS before yielding files.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/chunker.py",
+        "function_name": "iter_python_files"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "chunker-id-generation",
+    "question": "How are stable chunk IDs generated?",
+    "ground_truth_answer": "make_chunk_id hashes the filepath, function name, start line, and end line with SHA-1 and returns the first 16 hex characters.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/chunker.py",
+        "function_name": "make_chunk_id"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "chunker-cli-json",
+    "question": "What does the chunker CLI do when --json is passed?",
+    "ground_truth_answer": "The chunker CLI serializes all extracted chunks by calling chunk.to_dict() for each chunk and prints the resulting JSON.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/chunker.py",
+        "function_name": "main"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "chunker-cross-file-schema",
+    "question": "Which shared dataclass does the chunker import and return?",
+    "ground_truth_answer": "src.chunker imports Chunk from src.schema and returns lists of Chunk objects from chunk_repository and chunk_file.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/chunker.py",
+        "function_name": "chunk_repository"
+      },
+      {
+        "filepath": "src/schema.py",
+        "function_name": "Chunk"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-raw-file-record",
+    "question": "What record represents a repository-relative raw text file before chunking?",
+    "ground_truth_answer": "RawFile represents a repository-relative raw text file with filepath and raw_content fields.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "RawFile"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-local-repo",
+    "question": "Which function collects supported source and README files from a local repository path?",
+    "ground_truth_answer": "ingest_repository validates the local repository path, scans candidate files, filters unsupported or skipped files, and returns an IngestionResult.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "ingest_repository"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-clone-url",
+    "question": "Which function clones a Git repository for ingestion, and where does it clone by default?",
+    "ground_truth_answer": "clone_repository clones a Git URL using GitPython. If no destination is provided, it clones into data/raw/<repo-name>.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "clone_repository"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-file-types",
+    "question": "Which file types does ingestion include by default?",
+    "ground_truth_answer": "Ingestion includes files with .py, .js, .ts, and .java extensions, plus README files with no suffix, .md, .rst, or .txt.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": null
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-binary-handling",
+    "question": "How does ingestion treat binary or non-UTF-8 files?",
+    "ground_truth_answer": "_read_text_or_none returns None for files containing a null byte or files that cannot be decoded as UTF-8, and ingest_repository records them as binary_or_non_utf8 skips.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "_read_text_or_none"
+      },
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "ingest_repository"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-generated-files",
+    "question": "How does ingestion detect generated files?",
+    "ground_truth_answer": "_looks_generated checks generated-looking filename suffixes and scans the first 20 lines for markers such as @generated, auto-generated, do not edit, and generated by.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "_looks_generated"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "ingest-persist-raw-list",
+    "question": "Which function writes the flat raw file list for downstream stages?",
+    "ground_truth_answer": "write_raw_file_list creates the parent directory and writes the RawFile records as indented JSON.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/ingest.py",
+        "function_name": "write_raw_file_list"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "fixture-async-method",
+    "question": "What does Greeter.greet_async do in the sample fixture project?",
+    "ground_truth_answer": "Greeter.greet_async is an async method that returns self.greet(name), reusing the synchronous greeting implementation.",
+    "ground_truth_context": [
+      {
+        "filepath": "tests/fixtures/sample_python_project/sample.py",
+        "function_name": "Greeter.greet_async"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "tests-ingest-cli-json",
+    "question": "Which test verifies that the ingestion CLI emits raw file records as JSON?",
+    "ground_truth_answer": "test_cli_json_outputs_raw_file_records runs python -m src.ingest with --json and asserts the JSON payload contains filepath and raw_content.",
+    "ground_truth_context": [
+      {
+        "filepath": "tests/test_ingest.py",
+        "function_name": "test_cli_json_outputs_raw_file_records"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "dense-index-module",
+    "question": "Which module implements GraphCodeBERT dense retrieval in this repository?",
+    "ground_truth_answer": "GraphCodeBERT dense retrieval is implemented in src/index_dense.py. The module builds embeddings, persists them in ChromaDB, and exposes query_dense for dense search.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/index_dense.py",
+        "function_name": "query_dense"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "generator-ollama-endpoint",
+    "question": "What Ollama endpoint does the generator module use?",
+    "ground_truth_answer": "The generator uses OLLAMA_BASE_URL when it is set, otherwise it defaults to http://localhost:11434/v1 for Ollama's OpenAI-compatible API.",
+    "ground_truth_context": [
+      {
+        "filepath": "src/generator.py",
+        "function_name": "_make_openai_client"
+      }
+    ],
+    "expected_refusal": false
+  },
+  {
+    "id": "out-of-scope-streamlit-ui",
+    "question": "Where is the Streamlit chat UI implemented?",
+    "ground_truth_answer": "I cannot find this in the codebase. There is no Streamlit chat UI implemented yet.",
+    "ground_truth_context": [],
+    "expected_refusal": true
+  }
+]

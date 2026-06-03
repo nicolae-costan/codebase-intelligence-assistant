@@ -1,5 +1,7 @@
+import csv
 import os
 import sys
+from pathlib import Path
 
 # Add the project root to the Python path so we can import 'src'
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -9,6 +11,21 @@ if project_root not in sys.path:
 import streamlit as st
 from src.pipeline import iterative_rag
 
+MODE_OPTIONS = {
+    "Fast answer": {
+        "mode": "single",
+        "condition_id": "B",
+        "label": "Hybrid, single-pass",
+    },
+    "Deep search": {
+        "mode": "iterative",
+        "condition_id": "D",
+        "label": "Hybrid, iterative",
+    },
+}
+DEFAULT_MODE_LABEL = "Fast answer"
+DEEPEVAL_RESULTS_PATH = Path(project_root) / "results" / "deepeval_fastapi.csv"
+
 # Set page configuration
 st.set_page_config(
     page_title="Codebase Intelligence Assistant",
@@ -16,8 +33,27 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title(" Codebase Intelligence Assistant")
+st.title("Codebase Intelligence Assistant")
 st.markdown("Ask questions about your codebase, and the assistant will find the relevant snippets and generate a grounded answer.")
+
+eval_summary = {}
+if DEEPEVAL_RESULTS_PATH.exists():
+    with DEEPEVAL_RESULTS_PATH.open(encoding="utf-8", newline="") as handle:
+        eval_summary = {row["condition_id"]: row for row in csv.DictReader(handle)}
+
+selected_mode_label = st.sidebar.selectbox(
+    "Answer mode",
+    options=list(MODE_OPTIONS),
+    index=list(MODE_OPTIONS).index(DEFAULT_MODE_LABEL),
+)
+selected_mode = MODE_OPTIONS[selected_mode_label]
+selected_summary = eval_summary.get(selected_mode["condition_id"], {})
+st.sidebar.caption(f"{selected_mode['condition_id']}: {selected_mode['label']}")
+if selected_summary:
+    st.sidebar.metric("Answer correctness", selected_summary.get("answer_correctness", "n/a"))
+    st.sidebar.metric("Faithfulness", selected_summary.get("faithfulness", "n/a"))
+    st.sidebar.metric("Refusal quality", selected_summary.get("refusal_quality", "n/a"))
+    st.sidebar.caption("DeepEval judge results on the FastAPI ablation.")
 
 # Initialize chat history
 if "messages" not in st.session_state:
@@ -66,8 +102,8 @@ if prompt := st.chat_input("Ask a question about the codebase..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching codebase and generating answer..."):
             try:
-                # Use the ablation-backed default: hybrid retrieval, single-pass generation.
-                result = iterative_rag(prompt, mode="single", confidence=False)
+                # The default is condition B from the DeepEval-backed ablation.
+                result = iterative_rag(prompt, mode=selected_mode["mode"], confidence=False)
                 
                 answer = result.get("answer", "No answer generated.")
                 chunks = result.get("retrieved_chunks", [])

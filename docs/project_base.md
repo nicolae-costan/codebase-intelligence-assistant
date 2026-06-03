@@ -19,13 +19,13 @@ dense store: index/chroma_db
 sparse store: index/bm25/bm25.pkl
 ```
 
-The best UI configuration based on the latest ablation is:
+The best default UI configuration based on the latest ablation plus DeepEval LLM-judge evaluation is:
 
 ```python
 iterative_rag(prompt, mode="single", confidence=False)
 ```
 
-This corresponds to hybrid retrieval with one generation pass. It had the best answer overlap in the no-confidence FastAPI ablation while preserving perfect adversarial refusal accuracy.
+This corresponds to condition B: hybrid retrieval with one generation pass. It has the best final answer quality in the DeepEval results, with answer correctness `0.700`, while condition D remains useful as an optional "Deep search" mode because it has the best retrieval coverage and slightly higher faithfulness.
 
 ## 2. Problem and Motivation
 
@@ -54,7 +54,8 @@ codebase-intelligence-assistant/
   eval/
     run_eval.py               Manual evaluation harness.
     ablation.py               T12 ablation runner.
-    test_set.json             Original assistant-repo eval set.
+    deepeval_judge.py         DeepEval GEval LLM-as-judge evaluator.
+    test_set.json             Original local-project eval set.
     test_set_fastapi.json     FastAPI eval set used for current results.
   index/
     chroma_db/                Chroma dense vector store, gitignored.
@@ -63,6 +64,8 @@ codebase-intelligence-assistant/
   results/
     ablation_fastapi.csv      Latest FastAPI no-confidence ablation table.
     ablation_fastapi.json     Full latest FastAPI no-confidence ablation.
+    deepeval_fastapi.csv      Latest DeepEval judge summary.
+    deepeval_fastapi.json     Full latest DeepEval judge records.
     *_runs.jsonl              Per-query retrieval/generation traces.
     *_confidence_log.jsonl    Confidence logs from confidence-enabled runs.
   src/
@@ -96,10 +99,10 @@ Repository
   -> Local generation: Ollama OpenAI-compatible API with Qwen2.5-Coder
   -> Grounding/confidence layers
   -> Streamlit UI with answer and retrieved snippets
-  -> Evaluation and ablation results
+  -> Evaluation, ablation, and DeepEval judge results
 ```
 
-The current UI uses the default pipeline retriever, which is hybrid search. With `mode="single"`, the query is retrieved once and then passed to the generator. With `confidence=False`, the answer is not overwritten by the experimental confidence refusal layer.
+The current UI uses the default pipeline retriever, which is hybrid search. The default mode is "Fast answer", which maps to `mode="single"`. The optional "Deep search" mode maps to `mode="iterative"`. With `confidence=False`, the answer is not overwritten by the experimental confidence refusal layer.
 
 ## 5. Shared Data Model
 
@@ -250,7 +253,7 @@ chroma_path: index/chroma_db
 bm25_path: index/bm25/bm25.pkl
 ```
 
-The manifest is important because the first ablation attempt failed conceptually: the index pointed at FastAPI while the original eval set asked about this assistant repo. The manifest made the mismatch visible.
+The manifest is important because it records exactly which repository and path prefixes are indexed. This makes evaluation runs reproducible and prevents interpreting metrics without knowing the active corpus.
 
 ## 9. Dense Retrieval
 
@@ -448,7 +451,7 @@ Single mode:
 query -> hybrid_search(query) -> generate(context, query)
 ```
 
-This is the current UI default because it gave the best answer overlap in the no-confidence FastAPI ablation.
+This is the current UI default because it gave the best DeepEval answer correctness in the FastAPI judge run.
 
 ### 13.2 Iterative Two-Pass Mode
 
@@ -464,10 +467,10 @@ query + partial answer -> hybrid_search(refined query) -> final answer
 
 This is inspired by RepoCoder-style iterative retrieval. It can improve retrieval because the partial answer introduces useful terms that were absent from the original query.
 
-In the latest FastAPI no-confidence ablation, hybrid iterative had the best context hit rate, but hybrid single-pass had better answer overlap. Therefore:
+In the latest FastAPI results, hybrid iterative had the best context hit rate and slightly higher faithfulness, but hybrid single-pass had the best DeepEval answer correctness. Therefore:
 
-- use hybrid single-pass for the UI;
-- use hybrid iterative when the goal is maximum retrieval coverage or deeper source inspection.
+- use hybrid single-pass as the default UI mode;
+- use hybrid iterative as optional "Deep search" when the goal is maximum retrieval coverage or deeper source inspection.
 
 ### 13.3 Logging
 
@@ -553,6 +556,9 @@ The UI is a Streamlit chat application. It:
 
 - accepts a natural-language codebase question;
 - calls the RAG pipeline;
+- defaults to the DeepEval-backed "Fast answer" mode;
+- exposes an optional "Deep search" mode for higher retrieval coverage;
+- shows the selected mode's DeepEval summary when judge results are available;
 - shows the answer;
 - stores chat history in `st.session_state`;
 - displays retrieved snippets in an expander;
@@ -560,16 +566,23 @@ The UI is a Streamlit chat application. It:
 - shows grounding warnings when the grounding layer flags ungrounded claims;
 - can show confidence details if the confidence layer is enabled.
 
-Current UI call:
+Default UI call:
 
 ```python
 result = iterative_rag(prompt, mode="single", confidence=False)
 ```
 
-Reason:
+Optional deep-search call:
+
+```python
+result = iterative_rag(prompt, mode="iterative", confidence=False)
+```
+
+Reason for the default:
 
 - this maps to hybrid single-pass retrieval;
-- it had the best answer overlap in the latest no-confidence ablation;
+- it had the best DeepEval answer correctness score in the latest judge run;
+- it keeps the lower latency of one retrieval/generation pass;
 - it avoids the over-refusal observed with confidence enabled.
 
 Run the UI:
@@ -639,7 +652,49 @@ Current test sets:
 | `avg_confidence` | Mean confidence score when confidence is enabled. Blank when disabled. |
 | `low_confidence_rate` | Fraction low-confidence when confidence is enabled. Blank when disabled. |
 
-### 17.3 RAGAS
+### 17.3 DeepEval GEval LLM Judge
+
+File: `eval/deepeval_judge.py`
+
+The project now uses the professor-recommended DeepEval + GEval LLM-as-judge technique for final answer quality. The ablation metrics answer "Did retrieval find the right context?". DeepEval answers "Was the generated answer semantically correct and supported?".
+
+The judge reads existing ablation outputs rather than rerunning the RAG pipeline:
+
+```text
+input test set: eval/test_set_fastapi.json
+input ablation: results/ablation_fastapi.json
+output JSON: results/deepeval_fastapi.json
+output CSV: results/deepeval_fastapi.csv
+judge model: qwen2.5-coder:7b through local Ollama
+base URL: http://localhost:11434/v1/
+```
+
+Each record becomes a DeepEval test case:
+
+```python
+LLMTestCase(
+    input=question,
+    actual_output=answer,
+    expected_output=ground_truth_answer,
+    retrieval_context=retrieved_context_summaries,
+)
+```
+
+Judge metrics:
+
+| Metric | Meaning |
+|---|---|
+| `answer_correctness` | GEval score for whether the answer correctly answers the question compared with the ground truth, allowing paraphrases. |
+| `faithfulness` | GEval score for whether the answer is supported by the retrieved context. |
+| `refusal_quality` | GEval score for expected-refusal questions only. |
+| `rouge1_f1` | Lexical ROUGE-1 F1 baseline for comparison only. |
+| `rougeL_f1` | Lexical ROUGE-L F1 baseline for comparison only. |
+| `bleu` | Lexical BLEU-style baseline for comparison only. |
+| `error_count` | Number of judge calls that failed for a condition. |
+
+The lexical scores are included only as baselines. The main report interpretation should use `answer_correctness`, `faithfulness`, and `refusal_quality`.
+
+### 17.4 RAGAS
 
 The harness has optional RAGAS integration for:
 
@@ -648,7 +703,7 @@ The harness has optional RAGAS integration for:
 - context recall;
 - answer relevancy.
 
-In this environment, the optional RAGAS path encountered a dependency issue around `langchain_community.chat_models.vertexai`. This does not affect local proxy metrics or ablation runs without `--ragas`.
+RAGAS was considered, but DeepEval GEval was chosen for the current project because it matches the professor notebook and avoids the RAGAS/LangChain dependency issue seen in this environment. RAGAS remains optional research work, not the main evaluation method.
 
 ## 18. Ablation Experiments
 
@@ -703,7 +758,7 @@ Run with confidence for research only:
 
 ## 19. Current FastAPI Results
 
-Latest result file:
+Latest retrieval result file:
 
 ```text
 results/ablation_fastapi.csv
@@ -722,20 +777,43 @@ top_k: 7
 | C | Dense only | Iterative | 0.053 | 0.053 | 0.008 | 0.105 | 1.000 | 1.000 |
 | D | Hybrid | Iterative | 0.895 | 0.895 | 0.143 | 0.362 | 1.000 | 1.000 |
 
-### 19.2 Interpretation
+### 19.2 DeepEval Answer-Quality Results
+
+Latest judge result files:
+
+```text
+results/deepeval_fastapi.csv
+results/deepeval_fastapi.json
+generated_at: 2026-06-03T16:48:12.334835+00:00
+judge: DeepEval GEval
+model: qwen2.5-coder:7b
+base_url: http://localhost:11434/v1/
+```
+
+| Condition | Retrieval | Passes | Answer correctness | Faithfulness | Refusal quality | ROUGE-1 F1 | ROUGE-L F1 | BLEU | Errors |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| A | Dense only | Single | 0.079 | 0.025 | 0.800 | 0.101 | 0.075 | 0.055 | 0 |
+| B | Hybrid | Single | 0.700 | 0.260 | 0.800 | 0.297 | 0.198 | 0.223 | 0 |
+| C | Dense only | Iterative | 0.089 | 0.010 | 0.800 | 0.088 | 0.074 | 0.037 | 0 |
+| D | Hybrid | Iterative | 0.526 | 0.280 | 0.800 | 0.218 | 0.157 | 0.150 | 0 |
+
+### 19.3 Interpretation
 
 The results support these conclusions:
 
 - Hybrid retrieval is essential. Conditions B and D strongly outperform dense-only conditions A and C.
 - Hybrid iterative retrieval is best for context coverage. Condition D found expected contexts for 17 of 19 answerable FastAPI questions.
-- Hybrid single-pass is best for answer overlap. Condition B scored 0.488 answer overlap and refused only 2 of 20 test-set questions.
+- Hybrid single-pass is best for final answer quality. Condition B scored `0.700` DeepEval answer correctness, the best score by a clear margin.
+- Hybrid iterative is slightly best for faithfulness. Condition D scored `0.280` faithfulness versus B at `0.260`, but its answer correctness was lower.
+- The older token-overlap metric agrees directionally with DeepEval, but DeepEval is the better report metric because it allows paraphrases and judges semantic correctness.
 - Dense-only retrieval is weak for this codebase/test set. It often retrieves semantically related but wrong README or framework-level snippets.
 - Adversarial refusal is strong. All four conditions correctly refused or flagged all adversarial queries.
+- DeepEval judge stability was good in this run. All four conditions had `error_count = 0`.
 - Confidence should remain disabled in the UI for now. It over-refused answerable questions in previous experimentation.
 
-### 19.3 UI Decision From Results
+### 19.4 UI Decision From Results
 
-Use condition B in the UI:
+Use condition B as the default UI mode:
 
 ```python
 iterative_rag(prompt, mode="single", confidence=False)
@@ -743,35 +821,31 @@ iterative_rag(prompt, mode="single", confidence=False)
 
 Why condition B:
 
-- best answer overlap;
-- low refusal count;
+- best DeepEval answer correctness;
+- best lexical baselines among all conditions;
 - still uses hybrid retrieval;
 - perfect adversarial refusal in current evaluation;
 - faster than iterative mode because it runs one retrieval/generation pass.
 
-Use condition D when:
+Expose condition D as an optional "Deep search" mode when:
 
 - retrieval coverage matters more than answer conciseness;
 - debugging or inspecting source;
-- building a "deep search" mode in the UI.
+- the user wants the mode with the best context hit rate and slightly higher faithfulness.
 
 ## 20. What We Tried and What Changed
 
-### 20.1 Original Assistant-Repo Evaluation
+### 20.1 DeepEval Instead of RAGAS as the Main Judge
 
-The original `eval/test_set.json` asked questions about this assistant repository, for example:
+We considered RAGAS because it is a common RAG evaluation library, and an optional RAGAS path exists in `eval/run_eval.py`. For the current report, we chose DeepEval GEval instead.
 
-- `src/schema.py::Chunk`;
-- `src/chunker.py::chunk_repository`;
-- `src/generator.py::_make_openai_client`.
+Why DeepEval was chosen:
 
-However, the active index was built for FastAPI. Running the assistant-repo eval against the FastAPI index produced zero context hits. This was not a retrieval failure of the algorithm; it was an index/test-set mismatch.
-
-Fix:
-
-- keep the original assistant eval file for future self-evaluation;
-- add `eval/test_set_fastapi.json` for the current FastAPI demo index;
-- always check `index/manifest.json` before interpreting metrics.
+- it matches the professor-recommended notebook;
+- it directly grades generated answer quality;
+- it works with a local Ollama judge model;
+- it avoids relying on the unstable RAGAS/LangChain dependency stack for the main report;
+- it complements the existing ablation metrics instead of replacing them.
 
 ### 20.2 Confidence-Enabled Runs
 
@@ -789,9 +863,9 @@ RAGAS support was wired into `eval/run_eval.py`, but the installed LangChain/RAG
 
 Decision:
 
-- do not use `--ragas` for the current report unless the dependency stack is fixed;
-- rely on the local proxy metrics for the current ablation;
-- mention RAGAS as planned/optional judge-based evaluation.
+- do not use RAGAS as the main report metric for this project;
+- keep the optional path as research scaffolding;
+- use DeepEval GEval for answer correctness, faithfulness, and refusal quality.
 
 ### 20.4 Dense vs Hybrid
 
@@ -801,20 +875,20 @@ Hybrid retrieval fixed this by adding BM25 exact identifier matching and RRF fus
 
 ### 20.5 Single vs Iterative Retrieval
 
-Iterative retrieval improved context hit rate when paired with hybrid retrieval, but it did not improve answer overlap in the current no-confidence run. Likely reasons:
+Iterative retrieval improved context hit rate when paired with hybrid retrieval, but it did not improve final answer correctness in the current DeepEval run. Likely reasons:
 
 - second-pass query can drift based on partial answer wording;
 - generation may become more cautious or more diffuse;
 - context precision remains low because top-k still includes many non-target chunks.
 
-The best product choice is single-pass hybrid by default, with iterative as an optional "deep search" mode.
+The best product choice is single-pass hybrid by default, with iterative exposed as an optional "deep search" mode.
 
 ## 21. Tests
 
 Latest full test run:
 
 ```text
-108 passed, 1 warning
+112 passed, 1 warning
 ```
 
 Warning:
@@ -838,6 +912,7 @@ Main test files:
 | `tests/test_confidence.py` | Temperature sampling, lexical/semantic scoring, logging, threshold decisions. |
 | `tests/test_eval.py` | Test-set validation, metric scoring, refusal scoring, optional RAGAS degradation. |
 | `tests/test_ablation.py` | Four-condition ablation artifacts, adversarial scoring, CLI help. |
+| `tests/test_deepeval_judge.py` | DeepEval artifact writing, summary averages, expected refusals, mocked judge failures, CLI help. |
 
 The tests use fake retrievers, fake collections, fake generators, and small fixtures so they do not require Ollama or model downloads for normal unit testing.
 
@@ -893,13 +968,27 @@ Refusal questions: 1
   --no-confidence
 ```
 
-### 22.5 Run Full Tests
+### 22.5 Run DeepEval Judge
+
+```bash
+LOCAL_MODEL_API_KEY=dummy .venv/bin/python -m eval.deepeval_judge \
+  --ablation-results results/ablation_fastapi.json \
+  --test-set eval/test_set_fastapi.json \
+  --json-output results/deepeval_fastapi.json \
+  --csv-output results/deepeval_fastapi.csv \
+  --model qwen2.5-coder:7b \
+  --base-url http://localhost:11434/v1/
+```
+
+This command requires Ollama to be running with `qwen2.5-coder:7b` available.
+
+### 22.6 Run Full Tests
 
 ```bash
 .venv/bin/python -m pytest
 ```
 
-### 22.6 Run Streamlit UI
+### 22.7 Run Streamlit UI
 
 ```bash
 .venv/bin/streamlit run app/streamlit_app.py
@@ -942,7 +1031,7 @@ The confidence threshold and similarity method are not tuned enough for producti
 
 ### 23.6 RAGAS Dependency Stack
 
-RAGAS is optional and currently blocked by a LangChain community dependency issue in this environment. Local proxy metrics are working.
+RAGAS is optional and currently blocked by a LangChain community dependency issue in this environment. This is not blocking the project because DeepEval GEval is now the main LLM-judge evaluation method.
 
 ### 23.7 Generation Quality Depends on Ollama
 
@@ -984,7 +1073,8 @@ The generator requires a running Ollama-compatible endpoint and the `qwen2.5-cod
 
 ### 24.5 Evaluation Improvements
 
-- Fix RAGAS dependency versions and run judge-based metrics.
+- Add more DeepEval judge runs after retrieval or prompt changes.
+- Keep RAGAS as an optional comparison if the dependency stack is fixed.
 - Add more FastAPI questions, especially cross-file and negative questions.
 - Add latency metrics by condition to quantify the cost of iterative retrieval.
 - Evaluate top-k sensitivity.
@@ -993,7 +1083,6 @@ The generator requires a running Ollama-compatible endpoint and the `qwen2.5-cod
 
 ### 24.6 UI Improvements
 
-- Add a mode selector: "Fast answer" for hybrid single-pass, "Deep search" for hybrid iterative.
 - Add a confidence toggle that shows warnings without replacing answers.
 - Add source filters by path prefix.
 - Add a retrieved snippet score/rank display.
@@ -1006,16 +1095,17 @@ The generator requires a running Ollama-compatible endpoint and the `qwen2.5-cod
 1. Start with the problem: codebases are too large to inspect manually, and exact identifiers are often unknown.
 2. Show the pipeline diagram: ingestion -> chunking -> dense/BM25 -> RRF -> generation -> UI.
 3. Explain why hybrid retrieval matters: dense handles meaning, BM25 handles identifiers.
-4. Show the ablation table:
+4. Show the retrieval ablation and DeepEval judge tables:
 
 ```text
-B hybrid single: best answer overlap
+B hybrid single: best DeepEval answer correctness
 D hybrid iterative: best context hit rate
+D hybrid iterative: slightly best faithfulness
 Dense-only: weak baseline
 Adversarial refusal: 100 percent
 ```
 
-5. Open the Streamlit UI and ask:
+5. Open the Streamlit UI, keep "Fast answer" selected, and ask:
 
 ```text
 How does FastAPI apply custom Swagger UI parameters when generating the docs HTML?
@@ -1029,11 +1119,14 @@ Where is the React dashboard build script configured in FastAPI?
 ```
 
 8. Show that the assistant refuses.
-9. Conclude with future work: reranking, confidence tuning, RAGAS fix, multi-language chunking.
+9. Switch to "Deep search" to explain the optional retrieval-coverage mode.
+10. Conclude with future work: reranking, confidence warning mode, citation grading, multi-language chunking.
 
 ## 26. One-Slide Results Summary
 
-Use this table in slides:
+Use these tables in slides.
+
+Retrieval ablation:
 
 | Condition | Retrieval | Passes | Context hit | Answer overlap | Adversarial refusal |
 |---|---|---|---:|---:|---:|
@@ -1042,10 +1135,19 @@ Use this table in slides:
 | C | Dense | Iterative | 0.053 | 0.105 | 1.000 |
 | D | Hybrid | Iterative | 0.895 | 0.362 | 1.000 |
 
+DeepEval judge:
+
+| Condition | Retrieval | Passes | Answer correctness | Faithfulness | Refusal quality |
+|---|---|---|---:|---:|---:|
+| A | Dense | Single | 0.079 | 0.025 | 0.800 |
+| B | Hybrid | Single | 0.700 | 0.260 | 0.800 |
+| C | Dense | Iterative | 0.089 | 0.010 | 0.800 |
+| D | Hybrid | Iterative | 0.526 | 0.280 | 0.800 |
+
 Main takeaway:
 
 ```text
-Hybrid retrieval is the key improvement. Iterative hybrid gives the best retrieval coverage, while hybrid single-pass gives the best answer quality and is the best UI default.
+Hybrid retrieval is the key improvement. Hybrid single-pass gives the best answer correctness and is the default UI mode, while hybrid iterative remains useful as optional deep search.
 ```
 
 ## 27. Final Current State
@@ -1061,11 +1163,13 @@ The project currently has:
 - single-pass and iterative RAG modes;
 - grounding checks;
 - optional confidence estimation;
-- Streamlit chat UI;
+- Streamlit chat UI with Fast answer and Deep search modes;
 - manual eval harness;
 - FastAPI eval set;
 - four-condition ablation runner;
-- latest no-confidence FastAPI results;
-- 108 passing tests.
+- DeepEval GEval LLM-judge evaluator;
+- latest no-confidence FastAPI retrieval results;
+- latest DeepEval FastAPI answer-quality results;
+- 112 passing tests.
 
-The most important next technical step is to improve answer quality while preserving the strong retrieval gains from hybrid search. The most practical next product step is to add a UI toggle between "fast answer" and "deep search".
+The most important next technical step is to improve answer quality while preserving the strong retrieval gains from hybrid search. The most practical next product step is to add better citation grading and retrieval ranking visibility in the UI.

@@ -3,6 +3,7 @@ index/
 results/
 AGENTS.md
 .venv/
+.deepeval/
 .pytest_cache/
 __pycache__/
 *.py[cod]
